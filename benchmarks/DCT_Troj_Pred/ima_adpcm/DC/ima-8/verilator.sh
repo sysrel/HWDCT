@@ -1,0 +1,2 @@
+\rm -r obj_dir
+verilator -public --flatten -Wno-lint -O0 --top-module ima_adpcm_enc +incdir+/home/UFAD/ruochendai/Documents/DCT_Trojan/dontDC/fsm_eg/cell_library --cc ima_adpcm_enc.v timescale.v /home/UFAD/ruochendai/Documents/DCT_Trojan/dontDC/fsm_eg/cell_library/*.v -Wno-WIDTH -Wno-WIDTHCONCAT -Wno-CASEINCOMPLETE -Wno-SYMRSVDWORD  -Mdir obj_dir --exe tb.cpp 

@@ -1,0 +1,1611 @@
+//===-- SpecialFunctionHandler.cpp ----------------------------------------===//
+//
+//                     The KLEE Symbolic Virtual Machine
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
+#include "Memory.h"
+#include "SpecialFunctionHandler.h"
+#include "TimingSolver.h"
+#include "klee/MergeHandler.h"
+
+#include "klee/ExecutionState.h"
+#include "klee/util/ExprPPrinter.h"
+
+#include "klee/Internal/Module/KInstruction.h"
+#include "klee/Internal/Module/KModule.h"
+#include "klee/Internal/Support/Debug.h"
+#include "klee/Internal/Support/ErrorHandling.h"
+#include "klee/Internal/System/Time.h"
+
+#include "Executor.h"
+#include "MemoryManager.h"
+/* SYSREL extension */
+#include "StatsTracker.h"
+/* SYSREL extension */
+#include "klee/CommandLine.h"
+
+#include "llvm/IR/Module.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/CallSite.h"
+#include "llvm/IR/TypeFinder.h"
+#include "llvm/IR/LLVMContext.h"
+
+#include <errno.h>
+#include <sstream>
+#include <fstream>
+#include <tuple>
+using namespace llvm;
+using namespace klee;
+
+std::map<ref<Expr>, std::vector<ref<Expr> > > globalPCVctMap;
+
+std::map<ref<Expr>, std::set<ref<Expr> > > globalInputSetMap;/* For 1 input variable FSM */
+std::map<ref<Expr>, std::set<ref<Expr> > > globalTwoInputSetMap;/* For 2 inputs variable FSM */
+std::map<ref<Expr>, std::set<ref<Expr> > > globalThreeInputSetMap;/* For 3 input variable FSM */
+std::map<ref<Expr>, std::set<ref<Expr> > > globalFourInputSetMap;/* For 4 input variable FSM */
+std::map<ref<Expr>, std::set<ref<Expr> > > globalFiveInputSetMap;/* For 5 input variable FSM */
+std::map<ref<Expr>, std::set<ref<Expr> > > globalMetadataSetMap;
+
+std::map<ref<Expr>, std::vector<ref<Expr> > > globalTransitionPrevVectorMap;
+std::map<ref<Expr>, std::vector<ref<Expr> > > globalTransitionNextVectorMap;
+std::map<ref<Expr>, std::vector<ref<Expr> > > globalTransitionInputVectorMap;
+
+std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleForward;
+std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleBackward;
+
+std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, double > > > globalOutputTupleFindAllTransFromSrc;
+
+std::map<ref<Expr>, std::vector<ref<Expr> > > globalOutputVectorMap;
+
+
+std::map<long, std::map<ref<Expr>, std::set<ref<Expr> > > > localInputSetMap;/* For 1 input variable FSM */
+std::map<long, std::map<ref<Expr>, std::set<ref<Expr> > > > localTwoInputSetMap;/* For 2 inputs variable FSM */
+std::map<long, std::map<ref<Expr>, std::set<ref<Expr> > > > localThreeInputSetMap;/* For 3 input variable FSM */
+std::map<long, std::map<ref<Expr>, std::set<ref<Expr> > > > localFourInputSetMap;/* For 4 input variable FSM */
+std::map<long, std::map<ref<Expr>, std::set<ref<Expr> > > > localMetadataSetMap;
+
+std::set<std::pair<long,long> > globalMetadataSetsToBeChecked;
+std::map<long, std::set<std::pair<long,long> > > localMetadataSetsToBeChecked;
+std::map<std::pair<long,long>, std::string > globalMetadataMessage;
+std::map<long, std::map<std::pair<long,long>, std::string> > localMetadataMessage;
+std::map<ref<Expr>, std::pair<ref<Expr>,ref<Expr> > > globalRecordMetadataMap;
+std::map<long, std::map<ref<Expr>, std::pair<ref<Expr>,ref<Expr> > > > localRecordMetadataMap;
+std::map<ref<Expr>, std::string> globalMetadataConditionMessage;
+std::map<long, std::map<ref<Expr>, std::string> > localMetadataConditionMessage;
+
+extern void recordMemObj(ExecutionState &state, const MemoryObject *mo);
+extern cl::opt<bool> PruningMode;
+
+cl::opt<bool>
+TerminateNoDCTState("terminate-no-dct-state",
+                    cl::init(false),
+                    cl::desc("terminate state that don't have an incoming DCT, used in Trojan detection"));
+
+cl::opt<unsigned>
+NUMSTEPS("numsteps-value",
+             cl::desc("Value of numsteps\n"),
+             cl::init(0)); 
+             
+cl::opt<unsigned>
+SourceState("src-state-value",
+             cl::desc("Value of source state\n"),
+             cl::init(99)); 
+             
+cl::opt<unsigned>
+DestState("dest-state-value",
+             cl::desc("Value of dest state\n"),
+             cl::init(99)); 
+             
+             
+cl::opt<unsigned>
+rstState("reset-state",
+             cl::desc("Value of reset state\n"),
+             cl::init(99)); 
+                              
+cl::opt<std::string>
+DontCareTransFile("dontcare-trans-file",
+                 cl::desc("Name of the file that stores statistics and other info about found dontcare transitions\n")); 
+
+std::fstream *dontcareStats = NULL;
+extern double dontCareStartTime;
+
+cl::opt<std::string>
+OutputTrojanFile("output-trojan-file",
+                 cl::desc("Name of the file that stores statistics and other info about found output Trojans\n")); 
+std::fstream *outputTrojan = NULL;
+extern double outputTrojanTime;
+
+cl::opt<std::string>
+OutputForwardFile("add-output-forward",
+                 cl::desc("Name of the file that stores forward add_output_metadata() \n")); 
+std::fstream *outputForward = NULL;
+
+cl::opt<std::string>
+OutputBackwardFile("add-output-backward",
+                 cl::desc("Name of the file that stores backward add_output_metadata() \n")); 
+std::fstream *outputBackward = NULL;
+
+cl::opt<std::string>
+FindAllTransFromSrcFile("find-all-trans-from-src",
+                 cl::desc("Name of the file that stores klee_find_all_transitions_from_given_src_globally() \n")); 
+std::fstream *findAllTransFromSrc = NULL;
+
+namespace {
+  cl::opt<bool>
+  ReadablePosix("readable-posix-inputs",
+            cl::init(false),
+            cl::desc("Prefer creation of POSIX inputs (command-line arguments, files, etc.) with human readable bytes. "
+                     "Note: option is expensive when creating lots of tests (default=false)"));
+
+  cl::opt<bool>
+  SilentKleeAssume("silent-klee-assume",
+                   cl::init(false),
+                   cl::desc("Silently terminate paths with an infeasible "
+                            "condition given to klee_assume() rather than "
+                            "emitting an error (default=false)"));
+}
+
+
+/* SYSREL EXTENSION */
+ typedef std::pair<ExecutionState*,ExecutionState*> StatePair;
+std::set<std::string> assemblyFunctions;
+ typedef std::pair<ExecutionState*,ExecutionState*> StatePair;
+extern Interpreter *theInterpreter;
+extern const Module * moduleHandle;
+extern KModule *kmoduleExt;
+extern std::string getTypeName(llvm::Type*);
+extern bool isLazyInit(Type *t, bool &single, int &count);
+extern bool isAllocTypeLazyInit(Type *t, bool &single, int &count) ;
+extern int primArraySize;
+extern void addSingleOrDerivative(ExecutionState &state, ref<Expr> address);
+
+inline std::string& ltrim(std::string& s, const char* t = " \t\n\r\f\v")
+{
+    s.erase(0, s.find_first_not_of(t));
+    return s;
+}
+
+// trim from right
+inline std::string& rtrim(std::string& s, const char* t = " \t\n\r\f\v")
+{
+    s.erase(s.find_last_not_of(t) + 1);
+    return s;
+}
+
+AllocAPIHandler *APIHandler::allocAPIHandler = NULL;
+FreeAPIHandler *APIHandler::freeAPIHandler = NULL;
+IgnoreAPIHandler *APIHandler::ignoreAPIHandler = NULL;
+SideEffectAPIHandler *APIHandler::sideEffectAPIHandler = NULL;
+ReturnAPIHandler *APIHandler::returnAPIHandler = NULL;
+RefCountAPIHandler *APIHandler::refcountAPIHandler = NULL;
+CallbackAPIHandler *APIHandler::callbackAPIHandler = NULL;
+TerminateAPIHandler *APIHandler::terminateAPIHandler = NULL;
+std::map<std::string, std::set<APIAction*>> APIHandler::apiModel;
+std::map<std::string, APIAction*> APIHandler::symbolTable;
+/* SYSREL EXTENSION */
+
+/// \todo Almost all of the demands in this file should be replaced
+/// with terminateState calls.
+
+///
+
+
+
+// FIXME: We are more or less committed to requiring an intrinsic
+// library these days. We can move some of this stuff there,
+// especially things like realloc which have complicated semantics
+// w.r.t. forking. Among other things this makes delayed query
+// dispatch easier to implement.
+static SpecialFunctionHandler::HandlerInfo handlerInfo[] = {
+#define add(name, handler, ret) { name, \
+                                  &SpecialFunctionHandler::handler, \
+                                  false, ret, false }
+#define addDNR(name, handler) { name, \
+                                &SpecialFunctionHandler::handler, \
+                                true, false, false }
+  addDNR("__assert_rtn", handleAssertFail),
+  addDNR("__assert_fail", handleAssertFail),
+  addDNR("_assert", handleAssert),
+  addDNR("abort", handleAbort),
+  addDNR("_exit", handleExit),
+  { "exit", &SpecialFunctionHandler::handleExit, true, false, true },
+  addDNR("klee_abort", handleAbort),
+  addDNR("klee_silent_exit", handleSilentExit),
+  addDNR("klee_report_error", handleReportError),
+  add("calloc", handleCalloc, true),
+  add("free", handleFree, false),
+  add("klee_assume", handleAssume, false),
+  add("klee_check_memory_access", handleCheckMemoryAccess, false),
+  add("klee_get_valuef", handleGetValue, true),
+  add("klee_get_valued", handleGetValue, true),
+  add("klee_get_valuel", handleGetValue, true),
+  add("klee_get_valuell", handleGetValue, true),
+  add("klee_get_value_i32", handleGetValue, true),
+  add("klee_get_value_i64", handleGetValue, true),
+  add("klee_define_fixed_object", handleDefineFixedObject, false),
+  add("klee_get_obj_size", handleGetObjSize, true),
+  add("klee_get_errno", handleGetErrno, true),
+#ifndef __APPLE__
+  add("__errno_location", handleErrnoLocation, true),
+#else
+  add("__error", handleErrnoLocation, true),
+#endif
+  add("klee_is_symbolic", handleIsSymbolic, true),
+  add("klee_make_symbolic", handleMakeSymbolic, false),
+  add("klee_mark_global", handleMarkGlobal, false),
+  add("klee_open_merge", handleOpenMerge, false),
+  add("klee_close_merge", handleCloseMerge, false),
+  add("klee_prefer_cex", handlePreferCex, false),
+  add("klee_posix_prefer_cex", handlePosixPreferCex, false),
+  add("klee_print_expr", handlePrintExpr, false),
+  add("klee_print_range", handlePrintRange, false),
+  add("klee_set_forking", handleSetForking, false),
+  add("klee_stack_trace", handleStackTrace, false),
+  add("klee_warning", handleWarning, false),
+  add("klee_warning_once", handleWarningOnce, false),
+  add("klee_alias_function", handleAliasFunction, false),
+  add("malloc", handleMalloc, true),
+  add("realloc", handleRealloc, true),
+
+  /* SYSREL EXTENSION */
+  add("klee_set_metadata", handleSetMetadata, false),
+  add("klee_get_metadata", handleGetMetadata, true),
+  
+  add("klee_check_and_record_path_condition", handleCheckAndRecordPCGlobally, false),
+  add("klee_check_and_record_path_condition_with_assume", handleCheckAndRecordPCWithAssumeGlobally, false),
+  add("klee_add_assume", handleAddAssumeAsPC, false),  
+  add("klee_get_input_pattern", handleAcquireInputPatternGlobally, false),
+  
+  add("klee_add_metadata_globally", handleAddMetadataGlobally, false),
+  add("klee_add_metadata_globally_TwoInput", handleAddMetadataGloballyTwoInput, false),
+  add("klee_add_metadata_globally_ThreeInput", handleAddMetadataGloballyThreeInput, false),
+  add("klee_add_metadata_globally_FourInput", handleAddMetadataGloballyFourInput, false),
+  add("klee_add_metadata_globally_FiveInput", handleAddMetadataGloballyFiveInput, false),
+
+  add("klee_check_dontcare_transition_globally", handleDontCareTransitionGlobally, false), 
+  add("klee_check_dontcare_transition_globally_TwoInput", handleDontCareTransitionGloballyTwoInput, false), 
+  add("klee_check_dontcare_transition_globally_ThreeInput", handleDontCareTransitionGloballyThreeInput, false), 
+  add("klee_check_dontcare_transition_globally_FourInput", handleDontCareTransitionGloballyFourInput, false), 
+  add("klee_check_dontcare_transition_globally_FiveInput", handleDontCareTransitionGloballyFiveInput, false),
+
+  add("klee_find_all_transitions_from_given_src_globally", handleAllTransitionFromGivenSrcGlobally, false),     
+  add("klee_find_all_transitions_from_given_unreachable_src_one_step_globally", handleAllTransitionFromGivenUnreachableSrcOneStepGlobally, false),   
+
+  //add("klee_add_symboinput_globally", handleAddSymbInputGlobally, false),//new func with regard to gate level
+  add("klee_add_metadata_locally", handleAddMetadataLocally, false),
+  add("klee_add_metadata_locally_TwoInput", handleAddMetadataLocallyTwoInput, false),
+  add("klee_add_metadata_locally_ThreeInput", handleAddMetadataLocallyThreeInput, false),
+  add("klee_add_metadata_locally_FourInput", handleAddMetadataLocallyFourInput, false), 
+  
+  add("klee_check_dontcare_transition_locally", handleDontCareTransitionLocally, false), 
+  add("klee_check_dontcare_transition_locally_TwoInput", handleDontCareTransitionLocallyTwoInput, false), 
+  add("klee_check_dontcare_transition_locally_ThreeInput", handleDontCareTransitionLocallyThreeInput, false), 
+  add("klee_check_dontcare_transition_locally_FourInput", handleDontCareTransitionLocallyFourInput, false), 
+
+
+  add("klee_add_transition_metadata_globally", handleAddTransitionMetadataGlobally, false),
+  
+  add("klee_add_inter_metadata_globally", handleAddInterMetadataGlobally, false), 
+  add("klee_add_output_metadata_globally", handleAddOutputMetadataGlobally, false),
+  add("klee_add_back_output_metadata_globally", handleAddBackOutputMetadataGlobally, false),
+  add("klee_detect_trojan_for_output", handleDetectOutputTrojan, false),
+  add("klee_set_source_state", handleSetSourceState, false),
+  add("klee_set_dest_state", handleSetDestState, false),
+  
+  
+    
+  //add("klee_diff_metadata_globally", handleDiffMetadataGlobally, false), 
+  add("klee_add_metadata_globally_on_condition", handleAddMetadataGloballyOnCondition, false),
+  add("klee_add_metadata_locally_on_condition", handleAddMetadataLocallyOnCondition, false),
+  add("klee_record_metadata_globally_on_condition", handleRecordMetadataGloballyOnCondition, false),
+  add("klee_record_metadata_locally_on_condition", handleRecordMetadataLocallyOnCondition, false),
+  add("klee_diff_and_check_metadata_globally", handleReportDiffMetadataGlobally, true),
+  add("klee_diff_and_check_metadata_locally", handleReportDiffMetadataLocally, true),
+  add("klee_check_metadata_membership_globally", handleCheckMetadataMembershipGlobally, true),
+  add("klee_check_metadata_membership_locally", handleCheckMetadataMembershipLocally, true),
+  add("klee_find_tuple_for_diff_locally", handleFindTupleForDiffLocally, false),
+    
+  /* SYSREL EXTENSION */
+
+  // operator delete[](void*)
+  add("_ZdaPv", handleDeleteArray, false),
+  // operator delete(void*)
+  add("_ZdlPv", handleDelete, false),
+
+  // operator new[](unsigned int)
+  add("_Znaj", handleNewArray, true),
+  // operator new(unsigned int)
+  add("_Znwj", handleNew, true),
+
+  // FIXME-64: This is wrong for 64-bit long...
+
+  // operator new[](unsigned long)
+  add("_Znam", handleNewArray, true),
+  // operator new(unsigned long)
+  add("_Znwm", handleNew, true),
+
+  // Run clang with -fsanitize=signed-integer-overflow and/or
+  // -fsanitize=unsigned-integer-overflow
+  add("__ubsan_handle_add_overflow", handleAddOverflow, false),
+  add("__ubsan_handle_sub_overflow", handleSubOverflow, false),
+  add("__ubsan_handle_mul_overflow", handleMulOverflow, false),
+  add("__ubsan_handle_divrem_overflow", handleDivRemOverflow, false),
+
+#undef addDNR
+#undef add
+};
+
+SpecialFunctionHandler::const_iterator SpecialFunctionHandler::begin() {
+  return SpecialFunctionHandler::const_iterator(handlerInfo);
+}
+
+SpecialFunctionHandler::const_iterator SpecialFunctionHandler::end() {
+  // NULL pointer is sentinel
+  return SpecialFunctionHandler::const_iterator(0);
+}
+
+SpecialFunctionHandler::const_iterator& SpecialFunctionHandler::const_iterator::operator++() {
+  ++index;
+  if ( index >= SpecialFunctionHandler::size())
+  {
+    // Out of range, return .end()
+    base=0; // Sentinel
+    index=0;
+  }
+
+  return *this;
+}
+
+int SpecialFunctionHandler::size() {
+	return sizeof(handlerInfo)/sizeof(handlerInfo[0]);
+}
+
+SpecialFunctionHandler::SpecialFunctionHandler(Executor &_executor) 
+  : executor(_executor) {}
+
+
+void SpecialFunctionHandler::prepare() {
+  unsigned N = size();
+
+  for (unsigned i=0; i<N; ++i) {
+    HandlerInfo &hi = handlerInfo[i];
+    Function *f = executor.kmodule->module->getFunction(hi.name);
+    
+    // No need to create if the function doesn't exist, since it cannot
+    // be called in that case.
+  
+    if (f && (!hi.doNotOverride || f->isDeclaration())) {
+      // Make sure NoReturn attribute is set, for optimization and
+      // coverage counting.
+      if (hi.doesNotReturn)
+        f->addFnAttr(Attribute::NoReturn);
+
+      // Change to a declaration since we handle internally (simplifies
+      // module and allows deleting dead code).
+      if (!f->isDeclaration())
+        f->deleteBody();
+    }
+  }
+}
+
+void SpecialFunctionHandler::bind() {
+  unsigned N = sizeof(handlerInfo)/sizeof(handlerInfo[0]);
+
+  for (unsigned i=0; i<N; ++i) {
+    HandlerInfo &hi = handlerInfo[i];
+    Function *f = executor.kmodule->module->getFunction(hi.name);
+    
+    if (f && (!hi.doNotOverride || f->isDeclaration()))
+      handlers[f] = std::make_pair(hi.handler, hi.hasReturnValue);
+  }
+}
+
+
+bool SpecialFunctionHandler::handle(ExecutionState &state, 
+                                    Function *f,
+                                    KInstruction *target,
+                                    std::vector< ref<Expr> > &arguments) {
+  handlers_ty::iterator it = handlers.find(f);
+  if (it != handlers.end()) {    
+    Handler h = it->second.first;
+    bool hasReturnValue = it->second.second;
+     // FIXME: Check this... add test?
+    if (!hasReturnValue && !target->inst->use_empty()) {
+      executor.terminateStateOnExecError(state, 
+                                         "expected return value from void special function");
+    } else {
+      (this->*h)(state, target, arguments);
+    }
+    return true;
+  } else {
+    return false;
+  }
+}
+
+/****/
+
+// reads a concrete string from memory
+std::string 
+SpecialFunctionHandler::readStringAtAddress(ExecutionState &state, 
+                                            ref<Expr> addressExpr) {
+  ObjectPair op;
+  addressExpr = executor.toUnique(state, addressExpr);
+  if (!isa<ConstantExpr>(addressExpr)) {
+    executor.terminateStateOnError(
+        state, "Symbolic string pointer passed to one of the klee_ functions",
+        Executor::TerminateReason::User);
+    return "";
+  }
+  ref<ConstantExpr> address = cast<ConstantExpr>(addressExpr);
+  if (!state.addressSpace.resolveOne(address, op)) {
+    executor.terminateStateOnError(
+        state, "Invalid string pointer passed to one of the klee_ functions",
+        Executor::TerminateReason::User);
+    return "";
+  }
+  bool res __attribute__ ((unused));
+  assert(executor.solver->mustBeTrue(state, 
+                                     EqExpr::create(address, 
+                                                    op.first->getBaseExpr()),
+                                     res) &&
+         res &&
+         "XXX interior pointer unhandled");
+  const MemoryObject *mo = op.first;
+  const ObjectState *os = op.second;
+
+  char *buf = new char[mo->size];
+
+  unsigned i;
+  for (i = 0; i < mo->size - 1; i++) {
+    ref<Expr> cur = os->read8(i);
+    cur = executor.toUnique(state, cur);
+    assert(isa<ConstantExpr>(cur) && 
+           "hit symbolic char while reading concrete string");
+    buf[i] = cast<ConstantExpr>(cur)->getZExtValue(8);
+  }
+  buf[i] = 0;
+  
+  std::string result(buf);
+  delete[] buf;
+  return result;
+}
+
+/****/
+
+void SpecialFunctionHandler::handleAbort(ExecutionState &state,
+                           KInstruction *target,
+                           std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==0 && "invalid number of arguments to abort");
+  executor.terminateStateOnError(state, "abort failure", Executor::Abort);
+}
+
+void SpecialFunctionHandler::handleExit(ExecutionState &state,
+                           KInstruction *target,
+                           std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 && "invalid number of arguments to exit");
+  executor.terminateStateOnExit(state);
+}
+
+void SpecialFunctionHandler::handleSilentExit(ExecutionState &state,
+                                              KInstruction *target,
+                                              std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 && "invalid number of arguments to exit");
+  executor.terminateState(state);
+}
+
+void SpecialFunctionHandler::handleAliasFunction(ExecutionState &state,
+						 KInstruction *target,
+						 std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==2 && 
+         "invalid number of arguments to klee_alias_function");
+  std::string old_fn = readStringAtAddress(state, arguments[0]);
+  std::string new_fn = readStringAtAddress(state, arguments[1]);
+  KLEE_DEBUG_WITH_TYPE("alias_handling", llvm::errs() << "Replacing " << old_fn
+                                           << "() with " << new_fn << "()\n");
+  if (old_fn == new_fn)
+    state.removeFnAlias(old_fn);
+  else state.addFnAlias(old_fn, new_fn);
+}
+
+void SpecialFunctionHandler::handleAssert(ExecutionState &state,
+                                          KInstruction *target,
+                                          std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==3 && "invalid number of arguments to _assert");  
+  executor.terminateStateOnError(state,
+				 "ASSERTION FAIL: " + readStringAtAddress(state, arguments[0]),
+				 Executor::Assert);
+}
+
+void SpecialFunctionHandler::handleAssertFail(ExecutionState &state,
+                                              KInstruction *target,
+                                              std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==4 && "invalid number of arguments to __assert_fail");
+  executor.terminateStateOnError(state,
+				 "ASSERTION FAIL: " + readStringAtAddress(state, arguments[0]),
+				 Executor::Assert);
+}
+
+void SpecialFunctionHandler::handleReportError(ExecutionState &state,
+                                               KInstruction *target,
+                                               std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==4 && "invalid number of arguments to klee_report_error");
+  
+  // arguments[0], arguments[1] are file, line
+  executor.terminateStateOnError(state,
+				 readStringAtAddress(state, arguments[2]),
+				 Executor::ReportError,
+				 readStringAtAddress(state, arguments[3]).c_str());
+}
+
+void SpecialFunctionHandler::handleOpenMerge(ExecutionState &state,
+    KInstruction *target,
+    std::vector<ref<Expr> > &arguments) {
+  if (!UseMerge) {
+    klee_warning_once(0, "klee_open_merge ignored, use '-use-merge'");
+    return;
+  }
+
+  state.openMergeStack.push_back(
+      ref<MergeHandler>(new MergeHandler(&executor, &state)));
+
+  if (DebugLogMerge)
+    llvm::errs() << "open merge: " << &state << "\n";
+}
+
+void SpecialFunctionHandler::handleCloseMerge(ExecutionState &state,
+    KInstruction *target,
+    std::vector<ref<Expr> > &arguments) {
+  if (!UseMerge) {
+    klee_warning_once(0, "klee_close_merge ignored, use '-use-merge'");
+    return;
+  }
+  Instruction *i = target->inst;
+
+  if (DebugLogMerge)
+    llvm::errs() << "close merge: " << &state << " at " << i << '\n';
+
+  if (state.openMergeStack.empty()) {
+    std::ostringstream warning;
+    warning << &state << " ran into a close at " << i << " without a preceding open";
+    klee_warning("%s", warning.str().c_str());
+  } else {
+    executor.inCloseMerge.insert(&state);
+    state.openMergeStack.back()->addClosedState(&state, i);
+    state.openMergeStack.pop_back();
+  }
+}
+
+void SpecialFunctionHandler::handleNew(ExecutionState &state,
+                         KInstruction *target,
+                         std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==1 && "invalid number of arguments to new");
+
+  executor.executeAlloc(state, arguments[0], false, target);
+}
+
+void SpecialFunctionHandler::handleDelete(ExecutionState &state,
+                            KInstruction *target,
+                            std::vector<ref<Expr> > &arguments) {
+  // FIXME: Should check proper pairing with allocation type (malloc/free,
+  // new/delete, new[]/delete[]).
+
+  // XXX should type check args
+  assert(arguments.size()==1 && "invalid number of arguments to delete");
+  executor.executeFree(state, arguments[0]);
+}
+
+void SpecialFunctionHandler::handleNewArray(ExecutionState &state,
+                              KInstruction *target,
+                              std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==1 && "invalid number of arguments to new[]");
+  executor.executeAlloc(state, arguments[0], false, target);
+}
+
+void SpecialFunctionHandler::handleDeleteArray(ExecutionState &state,
+                                 KInstruction *target,
+                                 std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==1 && "invalid number of arguments to delete[]");
+  executor.executeFree(state, arguments[0]);
+}
+
+void SpecialFunctionHandler::handleMalloc(ExecutionState &state,
+                                  KInstruction *target,
+                                  std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  /* SYSREL EXTENSION */
+  // we need this to handle kmalloc and kzalloc via malloc
+  assert(arguments.size()>=1 && "invalid number of arguments to malloc");
+  //assert(arguments.size()==1 && "invalid number of arguments to malloc");
+  llvm::outs() << "argument to malloc: " << arguments[0] << "\n";
+  /* SYSREL EXTENSION */
+  executor.executeAlloc(state, arguments[0], false, target, false, true);
+}
+
+void SpecialFunctionHandler::handleAssume(ExecutionState &state,
+                            KInstruction *target,
+                            std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 && "invalid number of arguments to klee_assume");
+  
+  ref<Expr> e = arguments[0];
+  
+  if (e->getWidth() != Expr::Bool)
+    e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+  
+  bool res;
+  bool success __attribute__ ((unused)) = executor.solver->mustBeFalse(state, e, res);
+  assert(success && "FIXME: Unhandled solver failure");
+  if (res) {
+    if (SilentKleeAssume) {
+      executor.terminateState(state);
+    } else {
+      executor.terminateStateOnError(state,
+                                     "invalid klee_assume call (provably false)",
+                                     Executor::User);
+    }
+  } else {
+    executor.addConstraint(state, e);
+  }
+}
+
+void SpecialFunctionHandler::handleIsSymbolic(ExecutionState &state,
+                                KInstruction *target,
+                                std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 && "invalid number of arguments to klee_is_symbolic");
+
+  executor.bindLocal(target, state, 
+                     ConstantExpr::create(!isa<ConstantExpr>(arguments[0]),
+                                          Expr::Int32));
+}
+
+void SpecialFunctionHandler::handlePreferCex(ExecutionState &state,
+                                             KInstruction *target,
+                                             std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to klee_prefex_cex");
+
+  ref<Expr> cond = arguments[1];
+  if (cond->getWidth() != Expr::Bool)
+    cond = NeExpr::create(cond, ConstantExpr::alloc(0, cond->getWidth()));
+
+  Executor::ExactResolutionList rl;
+  executor.resolveExact(state, arguments[0], rl, "prefex_cex");
+  
+  assert(rl.size() == 1 &&
+         "prefer_cex target must resolve to precisely one object");
+
+  rl[0].first.first->cexPreferences.push_back(cond);
+}
+
+void SpecialFunctionHandler::handlePosixPreferCex(ExecutionState &state,
+                                             KInstruction *target,
+                                             std::vector<ref<Expr> > &arguments) {
+  if (ReadablePosix)
+    return handlePreferCex(state, target, arguments);
+}
+
+void SpecialFunctionHandler::handlePrintExpr(ExecutionState &state,
+                                  KInstruction *target,
+                                  std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to klee_print_expr");
+
+  std::string msg_str = readStringAtAddress(state, arguments[0]);
+  llvm::errs() << msg_str << ":" << arguments[1] << "\n";
+}
+
+void SpecialFunctionHandler::handleSetForking(ExecutionState &state,
+                                              KInstruction *target,
+                                              std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 &&
+         "invalid number of arguments to klee_set_forking");
+  ref<Expr> value = executor.toUnique(state, arguments[0]);
+  
+  if (ConstantExpr *CE = dyn_cast<ConstantExpr>(value)) {
+    state.forkDisabled = CE->isZero();
+  } else {
+    executor.terminateStateOnError(state, 
+                                   "klee_set_forking requires a constant arg",
+                                   Executor::User);
+  }
+}
+
+void SpecialFunctionHandler::handleStackTrace(ExecutionState &state,
+                                              KInstruction *target,
+                                              std::vector<ref<Expr> > &arguments) {
+  state.dumpStack(outs());
+}
+
+void SpecialFunctionHandler::handleWarning(ExecutionState &state,
+                                           KInstruction *target,
+                                           std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 && "invalid number of arguments to klee_warning");
+
+  std::string msg_str = readStringAtAddress(state, arguments[0]);
+  klee_warning("%s: %s", state.stack.back().kf->function->getName().data(), 
+               msg_str.c_str());
+}
+
+void SpecialFunctionHandler::handleWarningOnce(ExecutionState &state,
+                                               KInstruction *target,
+                                               std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 &&
+         "invalid number of arguments to klee_warning_once");
+
+  std::string msg_str = readStringAtAddress(state, arguments[0]);
+  klee_warning_once(0, "%s: %s", state.stack.back().kf->function->getName().data(),
+                    msg_str.c_str());
+}
+
+void SpecialFunctionHandler::handlePrintRange(ExecutionState &state,
+                                  KInstruction *target,
+                                  std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to klee_print_range");
+
+  std::string msg_str = readStringAtAddress(state, arguments[0]);
+  llvm::errs() << msg_str << ":" << arguments[1];
+  if (!isa<ConstantExpr>(arguments[1])) {
+    // FIXME: Pull into a unique value method?
+    ref<ConstantExpr> value;
+    bool success __attribute__ ((unused)) = executor.solver->getValue(state, arguments[1], value);
+    assert(success && "FIXME: Unhandled solver failure");
+    bool res;
+    success = executor.solver->mustBeTrue(state, 
+                                          EqExpr::create(arguments[1], value), 
+                                          res);
+    assert(success && "FIXME: Unhandled solver failure");
+    if (res) {
+      llvm::errs() << " == " << value;
+    } else { 
+      llvm::errs() << " ~= " << value;
+      std::pair< ref<Expr>, ref<Expr> > res =
+        executor.solver->getRange(state, arguments[1]);
+      llvm::errs() << " (in [" << res.first << ", " << res.second <<"])";
+    }
+  }
+  llvm::errs() << "\n";
+}
+
+void SpecialFunctionHandler::handleGetObjSize(ExecutionState &state,
+                                  KInstruction *target,
+                                  std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==1 &&
+         "invalid number of arguments to klee_get_obj_size");
+  Executor::ExactResolutionList rl;
+  executor.resolveExact(state, arguments[0], rl, "klee_get_obj_size");
+  for (Executor::ExactResolutionList::iterator it = rl.begin(), 
+         ie = rl.end(); it != ie; ++it) {
+    executor.bindLocal(
+        target, *it->second,
+        ConstantExpr::create(it->first.first->size,
+                             executor.kmodule->targetData->getTypeSizeInBits(
+                                 target->inst->getType())));
+  }
+}
+
+void SpecialFunctionHandler::handleGetErrno(ExecutionState &state,
+                                            KInstruction *target,
+                                            std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==0 &&
+         "invalid number of arguments to klee_get_errno");
+#ifndef WINDOWS
+  int *errno_addr = executor.getErrnoLocation(state);
+#else
+  int *errno_addr = nullptr;
+#endif
+
+  // Retrieve the memory object of the errno variable
+  ObjectPair result;
+  bool resolved = state.addressSpace.resolveOne(
+      ConstantExpr::create((uint64_t)errno_addr, Expr::Int64), result);
+  if (!resolved)
+    executor.terminateStateOnError(state, "Could not resolve address for errno",
+                                   Executor::User);
+  executor.bindLocal(target, state, result.second->read(0, Expr::Int32));
+}
+
+void SpecialFunctionHandler::handleErrnoLocation(
+    ExecutionState &state, KInstruction *target,
+    std::vector<ref<Expr> > &arguments) {
+  // Returns the address of the errno variable
+  assert(arguments.size() == 0 &&
+         "invalid number of arguments to __errno_location/__error");
+
+#ifndef WINDOWS
+  int *errno_addr = executor.getErrnoLocation(state);
+#else
+  int *errno_addr = nullptr;
+#endif
+
+  executor.bindLocal(
+      target, state,
+      ConstantExpr::create((uint64_t)errno_addr,
+                           executor.kmodule->targetData->getTypeSizeInBits(
+                               target->inst->getType())));
+}
+void SpecialFunctionHandler::handleCalloc(ExecutionState &state,
+                            KInstruction *target,
+                            std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to calloc");
+
+  ref<Expr> size = MulExpr::create(arguments[0],
+                                   arguments[1]);
+  executor.executeAlloc(state, size, false, target, true, true);
+}
+
+void SpecialFunctionHandler::handleRealloc(ExecutionState &state,
+                            KInstruction *target,
+                            std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to realloc");
+  ref<Expr> address = arguments[0];
+  ref<Expr> size = arguments[1];
+
+  Executor::StatePair zeroSize = executor.fork(state, 
+                                               Expr::createIsZero(size), 
+                                               true);
+  
+  if (zeroSize.first) { // size == 0
+    executor.executeFree(*zeroSize.first, address, target);   
+  }
+  if (zeroSize.second) { // size != 0
+    Executor::StatePair zeroPointer = executor.fork(*zeroSize.second, 
+                                                    Expr::createIsZero(address), 
+                                                    true);
+    
+    if (zeroPointer.first) { // address == 0
+      executor.executeAlloc(*zeroPointer.first, size, false, target, false, true);
+    } 
+    if (zeroPointer.second) { // address != 0
+      Executor::ExactResolutionList rl;
+      executor.resolveExact(*zeroPointer.second, address, rl, "realloc");
+      
+      for (Executor::ExactResolutionList::iterator it = rl.begin(), 
+             ie = rl.end(); it != ie; ++it) {
+        executor.executeAlloc(*it->second, size, false, target, false, true,
+                              it->first.second);
+      }
+    }
+  }
+}
+
+void SpecialFunctionHandler::handleFree(ExecutionState &state,
+                          KInstruction *target,
+                          std::vector<ref<Expr> > &arguments) {
+  // XXX should type check args
+  assert(arguments.size()==1 &&
+         "invalid number of arguments to free");
+  executor.executeFree(state, arguments[0]);
+}
+
+void SpecialFunctionHandler::handleCheckMemoryAccess(ExecutionState &state,
+                                                     KInstruction *target,
+                                                     std::vector<ref<Expr> > 
+                                                       &arguments) {
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to klee_check_memory_access");
+
+  ref<Expr> address = executor.toUnique(state, arguments[0]);
+  ref<Expr> size = executor.toUnique(state, arguments[1]);
+  if (!isa<ConstantExpr>(address) || !isa<ConstantExpr>(size)) {
+    executor.terminateStateOnError(state, 
+                                   "check_memory_access requires constant args",
+				   Executor::User);
+  } else {
+    ObjectPair op;
+
+    if (!state.addressSpace.resolveOne(cast<ConstantExpr>(address), op)) {
+      executor.terminateStateOnError(state,
+                                     "check_memory_access: memory error",
+				     Executor::Ptr, NULL,
+                                     executor.getAddressInfo(state, address));
+    } else {
+      ref<Expr> chk = 
+        op.first->getBoundsCheckPointer(address, 
+                                        cast<ConstantExpr>(size)->getZExtValue());
+      if (!chk->isTrue()) {
+        executor.terminateStateOnError(state,
+                                       "check_memory_access: memory error",
+				       Executor::Ptr, NULL,
+                                       executor.getAddressInfo(state, address));
+      }
+    }
+  }
+}
+
+void SpecialFunctionHandler::handleGetValue(ExecutionState &state,
+                                            KInstruction *target,
+                                            std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==1 &&
+         "invalid number of arguments to klee_get_value");
+
+  executor.executeGetValue(state, arguments[0], target);
+}
+
+void SpecialFunctionHandler::handleDefineFixedObject(ExecutionState &state,
+                                                     KInstruction *target,
+                                                     std::vector<ref<Expr> > &arguments) {
+  assert(arguments.size()==2 &&
+         "invalid number of arguments to klee_define_fixed_object");
+  assert(isa<ConstantExpr>(arguments[0]) &&
+         "expect constant address argument to klee_define_fixed_object");
+  assert(isa<ConstantExpr>(arguments[1]) &&
+         "expect constant size argument to klee_define_fixed_object");
+  
+  uint64_t address = cast<ConstantExpr>(arguments[0])->getZExtValue();
+  uint64_t size = cast<ConstantExpr>(arguments[1])->getZExtValue();
+  MemoryObject *mo = executor.memory->allocateFixed(address, size, state.prevPC->inst);
+  executor.bindObjectInState(state, mo, false);
+  mo->isUserSpecified = true; // XXX hack;
+}
+
+/* SYSREL extension */
+void SpecialFunctionHandler::handleSetMetadata(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+     state.setMetadata(arguments[0], arguments[1]);
+}
+
+void SpecialFunctionHandler::handleGetMetadata(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+     ref<Expr> cv = state.getMetadata(arguments[0]);
+     executor.bindLocal(target, state, cv);
+}
+
+
+/* arguments[0]: condition
+   arguments[1]: key for true cases
+   arguments[2]: key for false cases
+   Records the conditions and the sets to be checked at the end of the execution
+*/
+void SpecialFunctionHandler::handleRecordMetadataGloballyOnCondition(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+
+  llvm::errs() << "HANDLE RECORD METADATA args " << arguments.size() << "\n";
+
+  ref<Expr> e = arguments[0];
+  
+  if (e->getWidth() != Expr::Bool)
+    e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+
+  std::pair<ref<Expr>, ref<Expr> > sets;
+  sets.first = arguments[1];
+  sets.second = arguments[2];
+
+  globalRecordMetadataMap[e] = sets;
+  globalMetadataConditionMessage[e] = readStringAtAddress(state, arguments[3]);
+}
+
+void SpecialFunctionHandler::handleRecordMetadataLocallyOnCondition(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+
+  llvm::errs() << "HANDLE RECORD METADATA args " << arguments.size() << "\n";
+
+  ref<Expr> e = arguments[0];
+  
+  if (e->getWidth() != Expr::Bool)
+    e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+
+  std::pair<ref<Expr>, ref<Expr> > sets;
+  sets.first = arguments[1];
+  sets.second = arguments[2];
+
+  std::map<ref<Expr>, std::pair<ref<Expr>, ref<Expr> > > m;
+  if (localRecordMetadataMap.find((long)&state) != localRecordMetadataMap.end())
+     m = localRecordMetadataMap[(long)&state]; 
+  m[e] = sets;
+  localRecordMetadataMap[(long)&state] = m;
+  std::map<ref<Expr>, std::string> m2;
+  if (localMetadataConditionMessage.find((long)&state) != localMetadataConditionMessage.end())
+     m2 = localMetadataConditionMessage[(long)&state];
+  m2[e] = readStringAtAddress(state, arguments[3]);
+  localMetadataConditionMessage[(long)&state] = m2;
+}
+
+
+/* arguments[0]: condition
+   arguments[1]: key for true cases
+   arguments[2]: key for false cases
+   Checks the conditions upon execution in the system under test
+*/
+void SpecialFunctionHandler::handleAddMetadataGloballyOnCondition
+            (ExecutionState &state,
+             KInstruction *target,
+             std::vector<ref<Expr> > &arguments) {
+
+  llvm::errs() << "HANDLE ADD METADATA args " << arguments.size() << "\n";
+
+  ref<Expr> e = arguments[0];
+  
+  if (e->getWidth() != Expr::Bool)
+    e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+  
+
+  bool resF, resT;
+  bool successF __attribute__ ((unused)) = executor.solver->mustBeFalse(
+                                                  state, e, resF);
+  bool successT __attribute__ ((unused)) = executor.solver->mustBeTrue(
+                                                  state, e, resT);
+
+  llvm::errs() << "checking metadata condition " << e << " " << resT << " " << resF << "\n";
+  llvm::errs() << "keys: " << arguments[1] << " " << arguments[2] << "\n";
+  ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+
+  assert(successF && successT && "FIXME: Unhandled solver failure");
+  if (resT) {
+     std::set<ref<Expr> > ms;
+     if (globalMetadataSetMap.find(arguments[1]) != globalMetadataSetMap.end()) 
+       ms = globalMetadataSetMap[arguments[1]]; 
+     ms.insert(ConstantExpr::create((long)&state,64));
+     globalMetadataSetMap[arguments[1]] = ms;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[1] << "\n";
+  }
+  else if (resF) {
+     std::set<ref<Expr> > ms;
+     if (globalMetadataSetMap.find(arguments[2]) != globalMetadataSetMap.end()) 
+       ms = globalMetadataSetMap[arguments[2]]; 
+     ms.insert(ConstantExpr::create((long)&state,64));
+     globalMetadataSetMap[arguments[2]] = ms;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[2] << "\n";
+  } else { // both are feasible so add the state pointer to both sets
+     std::set<ref<Expr> > ms1;
+     if (globalMetadataSetMap.find(arguments[1]) != globalMetadataSetMap.end()) 
+       ms1 = globalMetadataSetMap[arguments[1]]; 
+     ms1.insert(ConstantExpr::create((long)&state,64));
+     globalMetadataSetMap[arguments[1]] = ms1;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[1] << "\n";
+ 
+    std::set<ref<Expr> > ms;
+    if (globalMetadataSetMap.find(arguments[2]) != globalMetadataSetMap.end()) 
+       ms = globalMetadataSetMap[arguments[2]]; 
+    ms.insert(ConstantExpr::create((long)&state,64));
+    globalMetadataSetMap[arguments[2]] = ms;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[2] << "\n";
+        
+  }
+
+  std::pair<long,long> dp;
+  if (globalMetadataSetMap.find(arguments[1]) != globalMetadataSetMap.end()) 
+       dp.first = (long)&globalMetadataSetMap[arguments[1]];
+  if (globalMetadataSetMap.find(arguments[2]) != globalMetadataSetMap.end()) 
+       dp.second = (long)&globalMetadataSetMap[arguments[2]];
+  llvm::errs() << "metadata set addresses: " << dp.first << " " << dp.second << "\n";
+  globalMetadataSetsToBeChecked.insert(dp);
+
+  globalMetadataMessage[dp] = readStringAtAddress(state, arguments[3]);
+}
+
+/* arguments[0]: condition
+   arguments[1]: key for true cases
+   arguments[2]: key for false cases
+   Checks the conditions upon execution in the system under test
+*/
+void SpecialFunctionHandler::handleAddMetadataLocallyOnCondition(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+
+  llvm::errs() << "HANDLE ADD METADATA args " << arguments.size() << "\n";
+
+  ref<Expr> e = arguments[0];
+  
+  if (e->getWidth() != Expr::Bool)
+    e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+  
+
+  bool resF, resT;
+  bool successF __attribute__ ((unused)) = executor.solver->mustBeFalse(state, e, resF);
+  bool successT __attribute__ ((unused)) = executor.solver->mustBeTrue(state, e, resT);
+
+  llvm::errs() << "checking metadata condition " << e << " " << resT << " " << resF << "\n";
+  llvm::errs() << "keys: " << arguments[1] << " " << arguments[2] << "\n";
+  ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+
+  assert(successF && successT && "FIXME: Unhandled solver failure");
+  std::map<ref<Expr>, std::set<ref<Expr> > > gm;
+  if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+     gm = localMetadataSetMap[(long)&state];
+
+  if (resT) {
+     std::set<ref<Expr> > ms;
+     if (gm.find(arguments[1]) != gm.end()) 
+       ms = gm[arguments[1]]; 
+     ms.insert(ConstantExpr::create((long)&state,64));
+     gm[arguments[1]] = ms;
+     localMetadataSetMap[(long)&state] = gm;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[1] << "\n";
+  }
+  else if (resF) {
+     std::set<ref<Expr> > ms;
+     if (gm.find(arguments[2]) != gm.end()) 
+       ms = gm[arguments[2]]; 
+     ms.insert(ConstantExpr::create((long)&state,64));
+     gm[arguments[2]] = ms;
+     localMetadataSetMap[(long)&state] = gm;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[2] << "\n";
+  } else { // both are feasible so add the state pointer to both sets
+     std::set<ref<Expr> > ms1;
+     if (gm.find(arguments[1]) != gm.end()) 
+       ms1 = gm[arguments[1]]; 
+     ms1.insert(ConstantExpr::create((long)&state,64));
+     gm[arguments[1]] = ms1;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[1] << "\n";
+ 
+    std::set<ref<Expr> > ms;
+    if (gm.find(arguments[2]) != gm.end()) 
+       ms = gm[arguments[2]]; 
+    ms.insert(ConstantExpr::create((long)&state,64));
+    gm[arguments[2]] = ms;
+    llvm::errs() << "Adding metadata " << ((long)&state) << " to the set of " << arguments[2] << "\n";
+
+    localMetadataSetMap[(long)&state] = gm;
+        
+  }
+
+  std::pair<long,long> dp;
+  if (gm.find(arguments[1]) != gm.end()) 
+       dp.first = (long)&gm[arguments[1]];
+  if (gm.find(arguments[2]) != gm.end()) 
+       dp.second = (long)&gm[arguments[2]];
+  llvm::errs() << "metadata set addresses: " << dp.first << " " << dp.second << "\n";
+  std::set<std::pair<long,long> > ls;
+  if (localMetadataSetsToBeChecked.find((long)&state) != localMetadataSetsToBeChecked.end())
+     ls = localMetadataSetsToBeChecked[(long)&state];
+  ls.insert(dp);
+  localMetadataSetsToBeChecked[(long)&state] = ls;
+  std::map<std::pair<long,long>, std::string>  lm2;
+  if (localMetadataMessage.find((long)&state) != localMetadataMessage.end())
+     lm2 = localMetadataMessage[(long)&state];
+  lm2[dp] = readStringAtAddress(state, arguments[3]);
+  localMetadataMessage[(long)&state] = lm2;
+}
+
+////////////////////////////////For 1 input variable FSM(add local metadata)////////////////////////////
+void SpecialFunctionHandler::handleAddMetadataLocally(ExecutionState &state,
+                                                KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+
+    std::map<ref<Expr>, std::set<ref<Expr> > > gm;
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput;
+    if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+        gm = localMetadataSetMap[(long)&state];
+    std::set<ref<Expr> > ms;
+    if (gm.find(arguments[0]) != gm.end()) 
+       ms = gm[arguments[0]]; 
+    ms.insert(arguments[1]);
+    gm[arguments[0]] = ms;
+    localMetadataSetMap[(long)&state] = gm;
+    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+
+    if (localInputSetMap.find((long)&state) != localInputSetMap.end())
+        gmInput = localInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInput;
+    if (gmInput.find(arguments[0]) != gmInput.end()) 
+       msInput = gmInput[arguments[0]]; 
+    msInput.insert(arguments[2]);
+    gmInput[arguments[0]] = msInput;
+    localInputSetMap[(long)&state] = gmInput;
+}
+
+
+////////////////////////////////For 2 input variable FSM(add local metadata)////////////////////////////
+void SpecialFunctionHandler::handleAddMetadataLocallyTwoInput(ExecutionState &state,
+                                                KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+
+    std::map<ref<Expr>, std::set<ref<Expr> > > gm;
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput;
+	std::map<ref<Expr>, std::set<ref<Expr> > > gmInputTwo;
+    if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+        gm = localMetadataSetMap[(long)&state];
+    std::set<ref<Expr> > ms;
+    if (gm.find(arguments[0]) != gm.end()) 
+       ms = gm[arguments[0]]; 
+    ms.insert(arguments[1]);
+    gm[arguments[0]] = ms;
+    localMetadataSetMap[(long)&state] = gm;
+    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+
+    if (localInputSetMap.find((long)&state) != localInputSetMap.end())
+        gmInput = localInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInput;
+    if (gmInput.find(arguments[0]) != gmInput.end()) 
+       msInput = gmInput[arguments[0]]; 
+    msInput.insert(arguments[2]);
+    gmInput[arguments[0]] = msInput;
+    localInputSetMap[(long)&state] = gmInput;
+	
+	if (localTwoInputSetMap.find((long)&state) != localTwoInputSetMap.end())
+        gmInputTwo = localTwoInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInputTwo;
+    if (gmInputTwo.find(arguments[0]) != gmInputTwo.end()) 
+       msInputTwo = gmInputTwo[arguments[0]]; 
+    msInputTwo.insert(arguments[3]);
+    gmInputTwo[arguments[0]] = msInputTwo;
+    localTwoInputSetMap[(long)&state] = gmInputTwo;
+}
+
+
+////////////////////////////////For 3 input variable FSM(add local metadata)////////////////////////////
+void SpecialFunctionHandler::handleAddMetadataLocallyThreeInput(ExecutionState &state,
+                                                KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+
+    std::map<ref<Expr>, std::set<ref<Expr> > > gm;
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput;
+	std::map<ref<Expr>, std::set<ref<Expr> > > gmInputTwo;
+	std::map<ref<Expr>, std::set<ref<Expr> > > gmInputThree;
+    if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+        gm = localMetadataSetMap[(long)&state];
+    std::set<ref<Expr> > ms;
+    if (gm.find(arguments[0]) != gm.end()) 
+       ms = gm[arguments[0]]; 
+    ms.insert(arguments[1]);
+    gm[arguments[0]] = ms;
+    localMetadataSetMap[(long)&state] = gm;
+    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+
+    if (localInputSetMap.find((long)&state) != localInputSetMap.end())
+        gmInput = localInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInput;
+    if (gmInput.find(arguments[0]) != gmInput.end()) 
+       msInput = gmInput[arguments[0]]; 
+    msInput.insert(arguments[2]);
+    gmInput[arguments[0]] = msInput;
+    localInputSetMap[(long)&state] = gmInput;
+	
+	if (localTwoInputSetMap.find((long)&state) != localTwoInputSetMap.end())
+        gmInputTwo = localTwoInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInputTwo;
+    if (gmInputTwo.find(arguments[0]) != gmInputTwo.end()) 
+       msInputTwo = gmInputTwo[arguments[0]]; 
+    msInputTwo.insert(arguments[3]);
+    gmInputTwo[arguments[0]] = msInputTwo;
+    localTwoInputSetMap[(long)&state] = gmInputTwo;
+	
+	if (localThreeInputSetMap.find((long)&state) != localThreeInputSetMap.end())
+        gmInputThree = localThreeInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInputThree;
+    if (gmInputThree.find(arguments[0]) != gmInputThree.end()) 
+       msInputThree = gmInputThree[arguments[0]]; 
+    msInputThree.insert(arguments[4]);
+    gmInputThree[arguments[0]] = msInputThree;
+    localThreeInputSetMap[(long)&state] = gmInputThree;
+}
+
+
+////////////////////////////////For 4 input variable FSM(add local metadata)////////////////////////////
+void SpecialFunctionHandler::handleAddMetadataLocallyFourInput(ExecutionState &state,
+                                                KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+
+    std::map<ref<Expr>, std::set<ref<Expr> > > gm;
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput;
+	std::map<ref<Expr>, std::set<ref<Expr> > > gmInputTwo;
+	std::map<ref<Expr>, std::set<ref<Expr> > > gmInputThree;
+	std::map<ref<Expr>, std::set<ref<Expr> > > gmInputFour;
+    if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+        gm = localMetadataSetMap[(long)&state];
+    std::set<ref<Expr> > ms;
+    if (gm.find(arguments[0]) != gm.end()) 
+       ms = gm[arguments[0]]; 
+    ms.insert(arguments[1]	);
+    gm[arguments[0]] = ms;
+    localMetadataSetMap[(long)&state] = gm;
+    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+
+    if (localInputSetMap.find((long)&state) != localInputSetMap.end())
+        gmInput = localInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInput;
+    if (gmInput.find(arguments[0]) != gmInput.end()) 
+       msInput = gmInput[arguments[0]]; 
+    msInput.insert(arguments[2]);
+    gmInput[arguments[0]] = msInput;
+    localInputSetMap[(long)&state] = gmInput;
+	
+	if (localTwoInputSetMap.find((long)&state) != localTwoInputSetMap.end())
+        gmInputTwo = localTwoInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInputTwo;
+    if (gmInputTwo.find(arguments[0]) != gmInputTwo.end()) 
+       msInputTwo = gmInputTwo[arguments[0]]; 
+    msInputTwo.insert(arguments[3]);
+    gmInputTwo[arguments[0]] = msInputTwo;
+    localTwoInputSetMap[(long)&state] = gmInputTwo;
+	
+	if (localThreeInputSetMap.find((long)&state) != localThreeInputSetMap.end())
+        gmInputThree = localThreeInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInputThree;
+    if (gmInputThree.find(arguments[0]) != gmInputThree.end()) 
+       msInputThree = gmInputThree[arguments[0]]; 
+    msInputThree.insert(arguments[4]);
+    gmInputThree[arguments[0]] = msInputThree;
+    localThreeInputSetMap[(long)&state] = gmInputThree;
+	
+	if (localFourInputSetMap.find((long)&state) != localFourInputSetMap.end())
+        gmInputFour = localFourInputSetMap[(long)&state];
+    std::set<ref<Expr> > msInputFour;
+    if (gmInputFour.find(arguments[0]) != gmInputFour.end()) 
+       msInputFour = gmInputFour[arguments[0]]; 
+    msInputFour.insert(arguments[5]);
+    gmInputFour[arguments[0]] = msInputFour;
+    localFourInputSetMap[(long)&state] = gmInputFour;
+}
+
+
+
+////////////////////////////////For 1 input variable FSM(From local metadata)//////////////////////////////////////////
+void SpecialFunctionHandler::handleDontCareTransitionLocally(
+                                    ExecutionState &state,
+                                    KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+
+    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "dontcarestats.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+
+    /////////start: hander reachable set from forward execution//////////////////
+    std::map<ref<Expr>, std::set<ref<Expr> > > gm1;
+    if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+        gm1 = localMetadataSetMap[(long)&state];
+    std::set<ref<Expr> > rs, rsConcrete; 
+    if (gm1.find(arguments[0]) != gm1.end()) 
+        rs = gm1[arguments[0]]; 
+
+    ref<Expr> reachable = NULL;
+
+	////Begin: Convert symbolic rs to concrete rs////
+    /*for(auto v: rs){
+       ExecutionState *fakeRS = new ExecutionState(state);
+       std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(*fakeRS, v);
+       ref<Expr> rsSymbolicFirst = rsSymbolic.first;
+       auto rsSymbolicFirstConstant = dyn_cast<ConstantExpr>(rsSymbolicFirst);
+       uint64_t rsSymbolicFirstUint = rsSymbolicFirstConstant->getZExtValue();
+       ref<Expr> rsSymbolicSecond = rsSymbolic.second;
+       auto rsSymbolicSecondConstant = dyn_cast<ConstantExpr>(rsSymbolicSecond);
+       uint64_t rsSymbolicSecondUint = rsSymbolicSecondConstant->getZExtValue();
+       for(auto v1 = rsSymbolicFirstUint; v1 <= rsSymbolicSecondUint; v1++){
+		auto v2 = v1;
+		rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
+       }
+	
+    }*/
+	////End: Convert symbolic rs to concrete rs////
+
+    for(auto v : rs) {
+              std::string Str2;
+  	      llvm::raw_string_ostream info2(Str2);
+              ExprPPrinter::printSingleExpr(info2, v);
+              out << "reachable set from rs: " << info2.str() << "\n";
+       llvm::errs() << " reachable value " << v << "\n";
+       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
+       if (reachable.isNull())
+          reachable = eqexp;
+       else {
+          ref<Expr> temp = reachable;
+          reachable = OrExpr::create(temp, eqexp);
+       }
+    }  
+
+    if (!reachable.isNull()){
+       llvm::errs() << "reachable set: " << reachable << "\n"; 
+    }
+     else
+	return;
+
+    ref<Expr> notreachable = NotExpr::create(reachable); 
+    llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
+    /////////end: hander reachable set from forward execution////////////////// 
+
+    /////////start: hander first input variable//////////////////
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput1;
+    if (localInputSetMap.find((long)&state) != localInputSetMap.end())
+        gmInput1 = localInputSetMap[(long)&state];
+    std::set<ref<Expr> > rsInput;
+    if (gmInput1.find(arguments[0]) != gmInput1.end()) 
+        rsInput = gmInput1[arguments[0]]; 
+
+    ref<Expr> reachableInput = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
+
+    for(auto v1 : rsInput) {
+       llvm::errs() << " reachable first input name " << v1 << "\n";
+       ref<Expr> eqexpInput = EqExpr::create(arguments[4], v1);
+
+       if (reachableInput.isNull())
+          reachableInput = eqexpInput;
+       else
+          reachableInput = OrExpr::create(reachableInput, eqexpInput);
+    }
+    llvm::errs() << "Width of reachableInput: " << reachableInput->getWidth() << "\n";
+    llvm::errs() << "Value of reachableInput: " << reachableInput << "\n";
+    /////////end: hander first input variable//////////////////
+  bool terminateSuccessDest = false;
+    for(auto v1 : rs){
+	bool sourceMatches;
+	bool destMatches;
+        ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
+
+	ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
+	ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
+	ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
+	executor.solver->setTimeout(executor.coreSolverTimeout);
+   	std::vector<ref<Expr>> vf;
+    	const std::vector<ref<Expr>> &vrDest = vf;
+	ExecutionState *fakeDest = new ExecutionState(vrDest);
+
+	ref<ConstantExpr> sourceValue;
+	ref<ConstantExpr> destValue;
+	
+	bool destSuccess = executor.solver->mayBeTrue(*fakeDest, Andv1eqexp, destMatches);
+
+	if (destSuccess && destMatches){
+           executor.solver->setTimeout(executor.coreSolverTimeout);
+           ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
+              std::string Str1;
+  	      llvm::raw_string_ostream info1(Str1);
+              ExprPPrinter::printSingleExpr(info1, notreachableANDinputs);
+              out << "notreachableANDinputs: " << info1.str() << "\n";
+           bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
+	   if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
+               terminateSuccessDest = true;
+              out << " Found a don't care transition, Time=" 
+                  << (util::getWallTime() - dontCareStartTime) << "\n";  	
+	      llvm::errs() << " Found a don't care transition, " << " source: \n";
+	      ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+	      llvm::errs() << "destination " << Andv1eqexp << "\n";
+	      ExecutionState *fakeSource = new ExecutionState(state);
+	      fakeSource->addConstraint(notreachableANDinputs);
+              	std::string Str;
+  	     	llvm::raw_string_ostream info(Str);
+             	ExprPPrinter::printConstraints(info, fakeSource->constraints);
+                out << "fakeSource: " << info.str() << "\n";
+	      /////////////////////////new added begin, try to find all possible source///////////////////////////
+	      std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
+	      ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
+	      ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
+	      llvm::errs() << "Return range of source in getRange: [" 
+                           << consfirst->getZExtValue() << "," 
+                           << conssecond->getZExtValue() << "]\n";
+	      /////////////////////////new added end, try to find all possible source///////////////////////////
+              out << "Range of source state in : [" 
+                  << consfirst->getZExtValue() << "," 
+                  << conssecond->getZExtValue() << "]\n";
+	      //executor.solver->getValue(*fakeSource, arguments[2], sourceValue);
+	      //llvm::errs() << "Return value of sourceValue in getValue: " << sourceValue->getZExtValue() << "\n";
+
+	      fakeDest->addConstraint(Andv1eqexp);
+	      executor.solver->getValue(*fakeDest, arguments[3], destValue);
+	      llvm::errs() << "Return value of destValue in getValue: " 
+                           << destValue->getZExtValue() << "\n";
+              out << "Destination state: " 
+                  << destValue->getZExtValue() << "\n";
+	   }	
+	 }
+ }
+ 
+}
+
+////////////////////////////////For 2 input variables FSM (from local metadata)//////////////////////////////////////////
+void SpecialFunctionHandler::handleDontCareTransitionLocallyTwoInput(
+                                    ExecutionState &state,
+                                    KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+    llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
+                 << " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
+    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "dontcarestats.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+      
+    /////////start: hander reachable set from forward execution//////////////////
+    std::map<ref<Expr>, std::set<ref<Expr> > > gm1;
+    if (localMetadataSetMap.find((long)&state) != localMetadataSetMap.end())
+        gm1 = localMetadataSetMap[(long)&state];
+    std::set<ref<Expr> > rs, rsConcrete; 
+    if (gm1.find(arguments[0]) != gm1.end()) 
+        rs = gm1[arguments[0]]; 
+
+    ref<Expr> reachable = NULL;
+
+	////Begin: Convert symbolic rs to concrete rs////
+    for(auto v: rs){
+       std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(state, v);
+       ref<Expr> rsSymbolicFirst = rsSymbolic.first;
+       auto rsSymbolicFirstConstant = dyn_cast<ConstantExpr>(rsSymbolicFirst);
+       uint64_t rsSymbolicFirstUint = rsSymbolicFirstConstant->getZExtValue();
+       ref<Expr> rsSymbolicSecond = rsSymbolic.second;
+       auto rsSymbolicSecondConstant = dyn_cast<ConstantExpr>(rsSymbolicSecond);
+       uint64_t rsSymbolicSecondUint = rsSymbolicSecondConstant->getZExtValue();
+       for(auto v1 = rsSymbolicFirstUint; v1 <= rsSymbolicSecondUint; v1++){
+		auto v2 = v1;
+		rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
+       }
+	
+    }
+	////End: Convert symbolic rs to concrete rs////
+    
+    for(auto v : rs) {
+              std::string Str2;
+  	      llvm::raw_string_ostream info2(Str2);
+              ExprPPrinter::printSingleExpr(info2, v);
+              out << "reachable set from rs: " << info2.str() << "\n";
+       llvm::errs() << " reachable value " << v << "\n";
+       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
+       if (reachable.isNull())
+          reachable = eqexp;
+       else {
+          ref<Expr> temp = reachable;
+          reachable = OrExpr::create(temp, eqexp);
+       }
+    }  
+
+    if (!reachable.isNull()){
+       llvm::errs() << "reachable set: " << reachable << "\n"; 
+    }
+     else
+	return;
+    ref<Expr> notreachable = NotExpr::create(reachable); 
+    llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
+    /////////end: hander reachable set from forward execution////////////////// 
+
+
+    /////////start: hander first input variable//////////////////
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput1;
+    if (localInputSetMap.find((long)&state) != localInputSetMap.end())
+        gmInput1 = localInputSetMap[(long)&state];
+    std::set<ref<Expr> > rsInputFirst;
+    //if (gmInput1.find(arguments[0]) != gmInput1.end()) 
+        rsInputFirst = gmInput1[arguments[0]]; 
+
+    ref<Expr> reachableInputFirst = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
+    for(auto v1 : rsInputFirst) {
+       llvm::errs() << " reachable first input name " << v1 << "\n";
+       ref<Expr> eqexpInputFirst = EqExpr::create(arguments[4], v1);
+
+       if (reachableInputFirst.isNull())
+          reachableInputFirst = eqexpInputFirst;
+       else
+          reachableInputFirst = OrExpr::create(reachableInputFirst, eqexpInputFirst);
+    }
+   	////////handle second input variable:
+    std::map<ref<Expr>, std::set<ref<Expr> > > gmInput2;
+    if (localTwoInputSetMap.find((long)&state) != localTwoInputSetMap.end())
+        gmInput2 = localTwoInputSetMap[(long)&state];
+    std::set<ref<Expr> > rsInputSecond;
+    //if (gmInput2.find(arguments[0]) != gmInput2.end()) 
+        rsInputSecond = gmInput2[arguments[0]]; 
+    ref<Expr> reachableInputSecond = NULL;
+    for(auto v1 : rsInputSecond) {
+       llvm::errs() << " reachable Second input name " << v1 << "\n";
+       ref<Expr> eqexpInputSecond = EqExpr::create(arguments[5], v1);
+
+       if (reachableInputSecond.isNull())
+          reachableInputSecond = eqexpInputSecond;
+       else
+

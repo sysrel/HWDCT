@@ -1,0 +1,11 @@
+global settings:
+
+data models:
+
+  singleton A;
+
+function models:
+
+lifecycle model:
+
+  foo continue if (x >= 0) where x is returnof foo ; bar

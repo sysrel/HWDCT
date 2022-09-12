@@ -1,0 +1,681 @@
+//===-- Executor.cpp ------------------------------------------------------===//
+//
+//                     The KLEE Symbolic Virtual Machine
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
+#include "Executor.h"
+#include "Context.h"
+#include "CoreStats.h"
+#include "ExternalDispatcher.h"
+#include "ImpliedValue.h"
+#include "Memory.h"
+#include "MemoryManager.h"
+#include "PTree.h"
+#include "Searcher.h"
+#include "SeedInfo.h"
+#include "SpecialFunctionHandler.h"
+#include "StatsTracker.h"
+#include "TimingSolver.h"
+#include "UserSearcher.h"
+#include "ExecutorTimerInfo.h"
+#include "Prose.h"
+
+#include "klee/ExecutionState.h"
+#include "klee/Expr.h"
+#include "klee/Interpreter.h"
+#include "klee/TimerStatIncrementer.h"
+#include "klee/CommandLine.h"
+#include "klee/Common.h"
+#include "klee/util/Assignment.h"
+#include "klee/util/ExprPPrinter.h"
+#include "klee/util/ExprSMTLIBPrinter.h"
+#include "klee/util/ExprUtil.h"
+#include "klee/util/GetElementPtrTypeIterator.h"
+#include "klee/Config/Version.h"
+#include "klee/Internal/ADT/KTest.h"
+#include "klee/Internal/ADT/RNG.h"
+#include "klee/Internal/Module/Cell.h"
+#include "klee/Internal/Module/InstructionInfoTable.h"
+#include "klee/Internal/Module/KInstruction.h"
+#include "klee/Internal/Module/KModule.h"
+#include "klee/Internal/Support/ErrorHandling.h"
+#include "klee/Internal/Support/FloatEvaluation.h"
+#include "klee/Internal/Support/ModuleUtil.h"
+#include "klee/Internal/System/Time.h"
+#include "klee/Internal/System/MemoryUsage.h"
+#include "klee/SolverStats.h"
+
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Attributes.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/TypeBuilder.h"
+#include "llvm/IR/TypeFinder.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Process.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/InlineAsm.h"
+#if LLVM_VERSION_CODE < LLVM_VERSION(3, 5)
+#include "llvm/Support/CallSite.h"
+#else
+#include "llvm/IR/CallSite.h"
+#endif
+
+#ifdef HAVE_ZLIB_H
+#include "klee/Internal/Support/CompressionStream.h"
+#endif
+
+#include <cassert>
+#include <algorithm>
+#include <iomanip>
+#include <iosfwd>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
+
+#include <sys/mman.h>
+
+#include <errno.h>
+#include <cxxabi.h>
+
+using namespace llvm;
+using namespace klee;
+
+/* SYSREL extension */
+#define ASYNC_STR "async_initiate"
+#define ENABLE_STR "enable_entry"
+#define STRUCT_LAZY_INIT_INS 10
+
+extern Interpreter *theInterpreter;
+
+std::set<klee::ExecutionState*> * successorsPaths = new std::set<klee::ExecutionState*>();
+
+extern std::set<std::string> voidTypeCasts;
+size_t maxVoidTypeCastSize = 8;
+
+bool symbolizeInlineAssembly = false;
+bool nullReturnValue = false;
+std::map<long, std::map<std::string, unsigned> > forkFreqMapTrue;
+std::map<long, std::map<std::string, unsigned> > forkFreqMapFalse;
+std::set<std::string> loopBoundExceptions;
+std::set<std::string> loopBoundExceptionFunctions;
+unsigned loopBound = 0;
+std::map<std::string, std::map<unsigned, 
+         std::pair<unsigned, unsigned> > > dataConstraintMap;
+
+std::map<std::string, std::vector<BoundAST> > fieldConstraintMap;
+
+std::map<std::string, std::vector<BoundAST> > funcArgConstraintMap;
+
+
+
+extern std::set<std::pair<long,long> > globalMetadataSetsToBeChecked;
+extern std::map<ref<Expr>, std::pair<ref<Expr>,ref<Expr> > > globalRecordMetadataMap;
+extern std::map<ref<Expr>, std::set<ref<Expr> > > globalMetadataSetMap;
+extern std::map<std::pair<long,long>, std::string > globalMetadataMessage;
+extern std::map<ref<Expr>, std::string> globalMetadataConditionMessage;
+
+cl::opt<bool> 
+InitFuncPtrs("init-funcptr-fields" , cl::desc("Set function pointer fields to null when lazy initializing struct type objects"), 
+             cl::init(false));
+
+cl::opt<bool>
+PreferredResolution("use-one-for-resol", cl::desc("Use the candidate memory object stored for the relevant symbolic \ 
+                                  address expression for symbolic address resolution!\n"), cl::init(false));
+
+cl::opt<bool>
+InferDataConstraints("infer-data-const", cl::desc("Infers data constraints from memory out of bounds errors\n"));
+
+cl::opt<bool>
+RecordValueFlow("record-value-flow", cl::desc("Enables recording of the value flow with context\n"), 
+                                                                          cl::init(false));
+
+cl::opt<bool>
+BreakSelectStmt("fork-for-select", cl::desc("Fork states to simulate the select statement\n"),
+           cl::init(false));
+
+cl::opt<bool>
+ModelFuncWithInlineASM("model-func-with-asm", cl::desc("Models functions with inline asm"),
+           cl::init(true));
+
+cl::opt<bool>
+ForwardTypeInference("infer-embedding-type", cl::desc("Perform forward analysis to infer enclosingtype\n"), 
+           cl::init(true));
+
+
+std::map<long, std::map<ref<Expr>, const MemoryObject *> > addressToMemObj;
+std::map<long, std::map<ref<Expr>, ref<Expr> > > symIndexToMemBase;
+extern std::set<std::string> assemblyFunctions;
+
+KModule *kmoduleExt; 
+llvm::Function *entryFunc;
+extern const Module * moduleHandle;
+extern bool asyncMode;
+extern std::vector<std::string> asyncFunc;
+extern std::vector<std::string> enabledFunc;
+extern APIHandler *apiHandler;
+extern bool progModel;
+extern std::map<std::string, std::map<unsigned int, int> > lazyInitInitializersWValues;
+extern std::map<std::string, std::map<unsigned int, int> > lazyInitInitializersWValuesUsingFields;
+extern std::map<std::string, std::vector<unsigned int> > lazyInitInitializers;
+extern std::map<std::string, std::map<unsigned int, std::string> > lazyFuncPtrInitializers;
+extern std::map<std::string, std::map<unsigned int, std::string> > lazyFuncPtrInitializersUsingFields;
+extern std::map<std::string, std::map<int, ConstrainValue_t> > argConstrainMap;
+bool staticAllocStatTracking = true;
+extern long staticAlloc;
+std::map<std::string, std::set<std::string> > enforceOrigPatternWExceptions;
+std::set<std::string> enforceOrig;
+#define SIZE_FOR_UNTYPED 8 
+std::map<long, std::map<int, std::set<std::string> > > stackTraceMap;
+bool recordStackTraces = false;
+int stackTraceCount = 3;
+
+std::map<std::string, std::map<unsigned, unsigned> > initArgArray;
+std::map<std::string, std::map<unsigned, unsigned> > initFieldArray;
+
+// state to MemoryObject* (pointed by embedded pointer) to embedding type name and offset
+std::map<long, std::map<long, std::pair<std::string, unsigned> > > lazyInitEmbeddedPointers;
+std::map<long, std::map<long, std::map<std::pair<std::string, unsigned>, unsigned> > > concreteInference;
+std::map<long, std::map<long, std::map<std::pair<std::string, unsigned>, 
+                    std::set<std::pair<std::string, unsigned> > > > > symbolicInference;
+
+// ExecutionState * to MemoryObject* to the negated symbolic expression
+std::map<long, std::map<long, ref<Expr> > > mallocRelevantInferences;
+
+extern void recordMemObj(ExecutionState &state, const MemoryObject *mo);
+// keeps track of bitcast from some primitive type to some struct type vice versa
+// computed on demand and for load instructions
+std::map<Function*,std::map<Instruction*, Type*> > reachableBitcast;
+
+// keeps track of ptrcast from int to some pointer type
+// computed on demand and for load instructions
+std::map<Function*,std::map<Instruction*, Type*> > reachableInttoPtrcast;
+
+// keeps track of cast from a negative offset to an embedding type
+// computed on demand and for load instructions
+std::map<Function*,std::map<Instruction*, Type*> > reachableCastToEmbedding;
+
+// mapping from ExecutionState addresses to MemoryObject addresses 
+// to the allocatin size that are determined as part of lazy init 
+std::map<long, std::map<long, unsigned int> > lazyInitConcreteAssumptions;
+
+typedef std::vector<std::pair<Value*,ref<Expr> > > ValuedInst;
+
+// a pair of context and valued instruction
+typedef std::pair<std::string,ValuedInst> ValuedContext;
+
+// a map from the destination to the source
+typedef std::map<ValuedContext, std::set<ValuedContext> > ValueFlowGraph;
+
+std::map<long, ValueFlowGraph> reverseVFG;
+
+// ExecutionState * to ValuedContext* to symbolic branch condition
+std::map<long, std::map<ValuedContext, ref<Expr> > > branchCondMap;
+
+// ExecutionState * to MemoryObject* to a pair of Instruction * that allocates it and Value * for th$
+std::map<long, std::map<long, ValuedContext> > memAllocMap;
+
+std::string getTypeName(Type *t);
+
+std::string getSourceWithContext(ExecutionState &state, KInstruction *ki);
+void getEnclosingAndOffset(KInstruction *ki, std::pair<std::string, unsigned> &p, bool source);
+
+void printContext(ValuedContext &vc) {
+   llvm::errs() << "context=" << vc.first << " ops&values=\n";
+   for(unsigned int i=0; i<vc.second.size(); i++)
+      llvm::errs() << "op=" << (*vc.second[i].first) << " value=" << vc.second[i].second << "\n";
+}
+
+void recordMallocRelevantInference(ExecutionState &state, const MemoryObject *mo, ref<Expr> expr) {
+     std::map<long, ref<Expr> > me;
+     if (mallocRelevantInferences.find((long)&state) != mallocRelevantInferences.end())
+        me = mallocRelevantInferences[(long)&state];
+     me[(long)mo] = expr;
+     mallocRelevantInferences[(long)&state] = me;
+}
+
+void recordMemAllocContext(ExecutionState &state, const MemoryObject *mo, ValuedContext vc) {
+    std::map<long, ValuedContext> ma;
+    if (memAllocMap.find((long)&state) != memAllocMap.end())
+       ma = memAllocMap[(long)&state];
+    ma[(long)mo] = vc;
+    memAllocMap[(long)&state] = ma;
+    llvm::errs() << "Recording mem alloc context for " << mo << "\n";
+}
+
+void getMemAllocContext(ExecutionState &state, const MemoryObject *mo, ValuedContext &vc) {
+    std::map<long, ValuedContext> ma;
+    if (memAllocMap.find((long)&state) != memAllocMap.end())
+       ma = memAllocMap[(long)&state];
+    if (ma.find((long)mo) != ma.end())
+       vc = ma[(long)mo];  
+}
+
+void recordValueContextForBranch(ExecutionState &state, ValuedContext &vc, ref<Expr> cond) {
+    std::map<ValuedContext, ref<Expr> > mb;    
+    if (branchCondMap.find((long)&state) != branchCondMap.end())
+       mb = branchCondMap[(long)&state];
+    mb[vc] = cond;
+    branchCondMap[(long)&state] = mb;
+    llvm::errs() << "Branch condition " << cond << " to be recorded with valued context ";
+    printContext(vc);
+}
+
+
+ref<Expr> getBranchCond(ExecutionState &state, ValuedContext &vc) {
+    std::map<ValuedContext, ref<Expr> > mb;    
+    if (branchCondMap.find((long)&state) == branchCondMap.end())
+       return NULL;
+    mb = branchCondMap[(long)&state];
+    if (mb.find(vc) != mb.end())
+       return mb[vc];
+    else return NULL;
+}
+
+
+void printInferences() {
+   std::fstream mc("mallocRelevantInferences.txt", std::fstream::out);
+   if (mc.is_open()) {
+      for(auto sme : mallocRelevantInferences) {
+         for(auto me : sme.second) {
+            std::string iss; 
+            llvm::raw_string_ostream os(iss);
+            ExprPPrinter::printSingleExpr(os, me.second);
+            mc << "Negation of malloc size dependent condition:\n";
+            mc << os.str() << "\n";
+         }
+      }
+      mc.close();
+   }
+
+   std::fstream rc("concreteInferences.txt", std::fstream::out);
+   if (rc.is_open()) {
+      for(auto se : concreteInference) {
+         for(auto me : se.second) {
+            for(auto te : me.second) {
+               rc << "Size of array in type " << te.first.first << " at offset " << te.first.second 
+                  << " should be at least " << te.second << "\n";
+            }
+         }
+      }
+      rc.close();
+   }
+
+   std::fstream sc("symbolicInferences.txt", std::fstream::out);
+   if (sc.is_open()) {
+      for(auto se: symbolicInference) {
+         for(auto me: se.second) {
+            for(auto te : me.second) {
+               sc << "Size of the array in type " 
+                  << te.first.first << " at offset " << te.first.second 
+                  << " restricts the following symbolic values \n";
+               for(auto c : te.second) {
+                 sc << c.first << "\n";
+               }
+            }
+         }
+      }
+      sc.close();
+   }
+}
+
+int getInitArgArraySize(std::string fname, unsigned argno) {
+    std::map<unsigned, unsigned> m;
+    if (initArgArray.find(fname) != initArgArray.end())
+       m = initArgArray[fname];
+    if (m.find(argno) != m.end())
+       return m[argno];
+    return 0;
+}
+
+int getInitFieldArray(std::string fname, unsigned offset) {
+    std::map<unsigned, unsigned> m;
+    if (initFieldArray.find(fname) != initFieldArray.end())
+       m = initFieldArray[fname];
+    if (m.find(offset) != m.end())
+       return m[offset];
+    return 0;
+    
+}
+
+
+bool isMalloc(Instruction *inst, Function *f) {
+  std::string iss; 
+  llvm::raw_string_ostream os(iss);
+  inst->print(os);
+  std::string is = os.str(); 
+  llvm::errs() << "instr str = " << is << "\n";
+  std::string fs = f->getName();
+  return (is.find("@malloc") != std::string::npos ||
+          is.find("@realloc") != std::string::npos || 
+          is.find("@kmalloc") != std::string::npos || 
+          is.find("@kzalloc") != std::string::npos || 
+          is.find("@krealloc") != std::string::npos || 
+          fs.find("@malloc") != std::string::npos ||
+          fs.find("@realloc") != std::string::npos || 
+          fs.find("@kmalloc") != std::string::npos || 
+          fs.find("@kzalloc") != std::string::npos || 
+          fs.find("@krealloc") != std::string::npos); 
+
+}
+
+// the instruction ki->inst has just been executed
+// the operands and the result, if any, have values
+// operand 0, ..., n-1, and result, if any
+// adds the data-flow edge in a reverse fashion
+void Executor::generateValuedInstruction(ExecutionState &state, KInstruction *ki) {
+   if (!ki) return;
+   if (!ki->inst) return;
+   // executing a return instruction may pop the stack frame so handled immediately after executing it
+   if (ki->inst->getOpcode() == Instruction::Ret) return;
+   ValuedInst old = state.lastValuedInst;
+   std::string oldc = state.lastContext;
+   llvm::errs() << "successors=" << successorsPaths->size() << "\n";
+   for(auto succ : *successorsPaths) {
+      int sf = succ->stackFrameBeforeExecInst;
+      // this avoids null pointer issues related to ref<Expr>
+      succ->dumpStack(llvm::errs()); 
+      //for(unsigned int index = 0; index < succ->stack.back().kf->numRegisters; index++) {
+        // llvm::errs() << succ->stack.back().locals[index].value << "\n";
+      //}      
+      llvm::errs() << "Stack frame for function " << succ->stack[sf].kf->function->getName() 
+                   << " with " << succ->stack[sf].kf->numRegisters << " locals:\n";
+      //for(unsigned int index = 0; index < succ->stackFrameBeforeExecInst->kf->numRegisters; index++) {
+        // llvm::errs() << succ->stackFrameBeforeExecInst->locals[index].value << "\n";
+      //}
+      while (succ->lastValuedInst.size() > 0) {
+            llvm::errs() << "size= " << succ->lastValuedInst.size()  << "\n";
+            std::pair<Value*,ref<Expr> > le = succ->lastValuedInst.back();
+            succ->lastValuedInst.pop_back();
+      }
+      llvm::errs() << "inst=" << (*ki->inst) << "\n";
+      //if (ki->inst->getOpcode() == Instruction::Call) {
+      if (isa<CallInst>(ki->inst) || isa<InvokeInst>(ki->inst)) {
+         CallSite cs(ki->inst);
+         Value *fp = cs.getCalledValue();
+         Function *f = getTargetFunction(fp, state);
+         if (!isa<InlineAsm>(fp) && f) {
+            unsigned numArgs = cs.arg_size();
+            for(unsigned int i=0; i < numArgs; i++) {
+               std::pair<Value*,ref<Expr> > vp;
+               vp.first = ((llvm::CallInst*)ki->inst)->getArgOperand(i);
+               vp.second = NULL;
+               llvm::errs() << " arg operand " << i << (*vp.first) << "\n";
+               vp.second = eval(ki, i+1, *succ, &succ->stack[sf]).value;
+               if (!vp.second.isNull()) {
+                  llvm::errs() << "arg value " << vp.second << "\n";
+                  succ->lastValuedInst.push_back(vp);
+               }
+            }
+         }
+      }
+      else {
+            for(unsigned int i=0; i<ki->inst->getNumOperands(); i++) {
+               std::pair<Value*,ref<Expr> > vp;
+               vp.first = ki->inst->getOperand(i);
+               vp.second = NULL;
+               llvm::Constant *c = dyn_cast<llvm::Constant>(vp.first);
+               llvm::Instruction *ins = dyn_cast<llvm::Instruction>(vp.first);
+               //llvm::Argument *arg = dyn_cast<llvm::Argument>(vp.first);
+               if (c || ins) {
+                  llvm::errs() << " operand " << i << (*vp.first) << "\n";
+                  vp.second = eval(ki, i, *succ, &succ->stack[sf]).value;
+                  if (!vp.second.isNull()) {
+                     succ->lastValuedInst.push_back(vp);
+                  }
+               }
+               else llvm::errs() << "skipping\n";
+            }
+      }
+      succ->lastContext = getSourceWithContext(*succ,ki);
+      ValuedContext vc = std::make_pair(succ->lastContext,succ->lastValuedInst);
+      ValuedContext vcold = std::make_pair(oldc, old);
+      ValueFlowGraph vfg;
+      if (reverseVFG.find((long)succ) != reverseVFG.end())
+         vfg = reverseVFG[(long)succ];
+      std::set<ValuedContext> vs;
+      if (vfg.find(vc) != vfg.end())
+         vs = vfg[vc];
+      vs.insert(vcold);
+      vfg[vc] = vs;
+      reverseVFG[(long)succ] = vfg;
+      Function *func = (Function*)ki->inst->getParent()->getParent();
+      if (isMalloc(ki->inst, func) && succ->lastMallocedMem)
+         recordMemAllocContext(*succ, succ->lastMallocedMem, vc);
+      if (ki->inst->getOpcode() == Instruction::Br && !succ->lastBranchInstConstraint.isNull())
+         recordValueContextForBranch(*succ, vc, succ->lastBranchInstConstraint);
+      if (dyn_cast<GetElemetPtrInst>(ki->inst))
+   }
+}
+
+bool isValid(TimingSolver *solver, ref<Expr> formula) {
+   ref<Expr> t = klee::ConstantExpr::create(true, 1);
+   std::vector<ref<Expr> > v;
+   v.push_back(t);
+   const std::vector<ref<Expr> > & vr = v;
+   ExecutionState * solverState = new ExecutionState(vr);
+   bool res = false;
+   bool success = solver->mustBeTrue(*solverState, formula, res); 
+   if (success)
+      return res;
+   else return false;
+}
+
+void collectDependentConds(ExecutionState &state, ValueFlowGraph vfg, ValuedContext &vc, 
+           std::set<ValuedContext> &seen, std::vector<ref<Expr> > &mcond, TimingSolver *solver) {
+   if (seen.find(vc) != seen.end()) {
+      llvm::errs() << "context seen before:\n";
+      printContext(vc);
+      return; 
+   }
+   seen.insert(vc);
+   ref<Expr> cond = getBranchCond(state, vc);
+   if (!cond.isNull()) {
+      bool found = false;
+      for(unsigned int i=0; i<mcond.size() && !found; i++) {
+          ref<Expr> f1 = AndExpr::create(mcond[i], cond);
+          ref<Expr> nc = Expr::createIsZero(cond);
+          ref<Expr> nmc = Expr::createIsZero(mcond[i]);
+          ref<Expr> f2 = AndExpr::create(nc, nmc);
+          ref<Expr> eqv = OrExpr::create(f1, f2);
+          if (isValid(solver, eqv)) {
+             llvm::errs() << "Are " << mcond[i] << " and " << cond << " equivalent? ";  
+             found = true;
+             llvm::errs() << "yes!\n";
+          }
+          else llvm::errs() << "no!\n";
+      } 
+      if (!found)
+         mcond.push_back(cond);
+   }
+   else {
+      llvm::errs() << "No branch condition for context:\n";
+      printContext(vc);
+   }
+   std::set<ValuedContext> vs;
+   if (vfg.find(vc) != vfg.end())
+      vs = vfg[vc];
+   llvm::errs() << "predecessors of context=" << vs.size() << "\n";
+   printContext(vc);
+   for(auto vci : vs) {
+      llvm::errs() << "predecessor context:\n";
+      printContext(vci);
+      collectDependentConds(state, vfg, vci, seen, mcond, solver);
+   }
+}
+
+
+
+
+ref<Expr> getMallocDependentBranchCondition(ExecutionState &state, const MemoryObject *mo, 
+         TimingSolver *solver) {
+   // find the ContextValue for the relevant malloc
+   ValuedContext vc;
+   vc.first = "none";
+   getMemAllocContext(state, mo, vc);
+   if (vc.first == "none") {
+      llvm::errs() << "No memory alloc context for " << mo << "\n";
+      return NULL;
+   }
+   // vc stored the valued context of the malloc instruction, now follow the path backward
+   std::vector<ref<Expr> > conds;
+   ValueFlowGraph vfg;
+   if (reverseVFG.find((long)&state) != reverseVFG.end())
+      vfg = reverseVFG[(long)&state];
+   std::set<ValuedContext> seen;
+   ref<Expr> mcond = NULL;
+   collectDependentConds(state,vfg,vc,seen,conds,solver);
+   if (conds.size() > 0) {
+      printContext(vc);
+      ref<Expr> temp = conds[0];
+      for(unsigned int i=1; i<conds.size(); i++) {
+         ref<Expr> temp2 = AndExpr::create(conds[i], temp);
+         temp = temp2;
+      }
+      mcond = Expr::createIsZero(temp);
+      llvm::errs() << "Collected malloc dependent condition " << mcond << "\n";
+   }
+   return mcond;   
+}
+
+void recordLazyInitEmbeddedPointers(ExecutionState &state, const MemoryObject *mo, 
+                                                         Type *t, unsigned offset) {
+         
+     std::map<long, std::pair<std::string, unsigned> > m;
+     if (lazyInitEmbeddedPointers.find((long)&state) != lazyInitEmbeddedPointers.end())
+        m = lazyInitEmbeddedPointers[(long)&state];
+     std::pair<std::string, unsigned> p;
+     p.first = getTypeName(t);
+     p.second = offset;
+     m[(long)mo] = p;
+     lazyInitEmbeddedPointers[(long)&state] = m;
+     llvm::errs() << "recording for state " << &state 
+                  << " memoryobject " << mo << " with base address " << mo->getBaseExpr() 
+                  << " embedding type " << p.first << " and offset=" << p.second << "\n";
+}
+
+void recordConcreteInference(ExecutionState &state, const MemoryObject *mo, 
+                std::pair<std::string, unsigned> p, unsigned size) {
+   
+    std::map<long, std::map<std::pair<std::string, unsigned>, unsigned> > m1;
+    std::map<std::pair<std::string, unsigned>, unsigned> m2;
+    if (concreteInference.find((long)&state) != concreteInference.end())
+       m1 = concreteInference[(long)&state];
+    if (m1.find((long)mo) != m1.end())
+       m2 = m1[(long)mo];
+    unsigned max = 0;
+    if (m2.find(p) != m2.end())
+       max = m2[p];
+    if (size > max)
+       m2[p] = size;
+    m1[(long)mo] = m2;
+    concreteInference[(long)&state] = m1;
+}
+
+void recordSymbolicInference(ExecutionState &state, const MemoryObject *mo, 
+                                          std::pair<std::string, unsigned> p, 
+                                               std::pair<std::string, unsigned> pv) {
+
+     std::map<long, std::map<std::pair<std::string, unsigned>, 
+                    std::set<std::pair<std::string, unsigned> > > > m1;
+     std::map<std::pair<std::string, unsigned>, 
+                    std::set<std::pair<std::string, unsigned> > > m2;
+
+     if (symbolicInference.find((long)&state) != symbolicInference.end())
+        m1 = symbolicInference[(long)&state];
+     if (m1.find((long)mo) != m1.end())
+        m2 = m1[(long)mo];
+     std::set<std::pair<std::string, unsigned> > s;
+     if (m2.find(p) != m2.end())
+        s = m2[p];
+     s.insert(pv);
+     m2[p] = s;
+     m1[(long)mo] = m2;
+     symbolicInference[(long)&state] = m1;
+}
+
+
+void getGeptrForLoad(LoadInst *li, std::set<GetElementPtrInst*> &result) {
+  Value *iv = li->getPointerOperand();
+  
+}
+
+
+ref<Expr> getIndexDependentBranchCondition(ExecutionState &state, KInstruction *target, 
+ TimingSolver *solver) {
+  LoadInst *li = dyn_cast<LoadInst>(target->inst);
+  if (!li) return NULL;
+
+  std::vector<ValuedContext> vcset;
+  getGeptrForLoad(li, vcset);
+  ValueFlowGraph vfg;
+  if (reverseVFG.find((long)&state) != reverseVFG.end())
+     vfg = reverseVFG[(long)&state];
+  else assert(0 && "State not recorded in value flow graph!\n");
+  ref<Expr> icond = NULL;
+  for(unsigned int i=0; i<vcset.size(); i++) {
+     std::vector<ref<Expr> > conds;
+     std::set<ValuedContext> seen;
+     collectDependentConds(state,vfg,vc,seen,conds,solver);
+   if (conds.size() > 0) {
+      printContext(vc);
+      ref<Expr> temp = conds[0];
+      for(unsigned int i=1; i<conds.size(); i++) {
+         ref<Expr> temp2 = AndExpr::create(conds[i], temp);
+         temp = temp2;
+      }
+      mcond = Expr::createIsZero(temp);
+      llvm::errs() << "Collected malloc dependent condition " << mcond << "\n";
+   }
+   return mcond;   
+  }  
+}
+
+
+void inferConstraintFromMemoryError(ExecutionState &state, const MemoryObject *mo, 
+      ref<Expr> address, KInstruction *target, TimingSolver *solver) {
+
+   ref<Expr> mdexp = getMallocDependentBranchCondition(state, mo, solver);
+   if (!mdexp.isNull()) {
+      llvm::errs() << "Malloc relevant inference: " << mdexp << "\n";
+      recordMallocRelevantInference(state, mo, mdexp);
+   }
+
+   ref<Expr> idexp = getIndexDependentBranchCondition(state, target, solver);
+   if (!idexp.isNull()) {
+      llvm::errs() << "Index relevant inference: " << idexp << "\n";
+      recordIndexRelevantInference(state, target, idexp);
+   }
+
+   std::map<long, std::pair<std::string, unsigned> > m;
+   if (lazyInitEmbeddedPointers.find((long)&state) == lazyInitEmbeddedPointers.end()) {
+      llvm::errs() << "could not find the state " << &state << " in lazyInitEmbeddedPointers!\n";
+      return;
+  }
+   m = lazyInitEmbeddedPointers[(long)&state];
+   if (m.find((long)mo) == m.end()) {
+      llvm::errs() << "could not find the memory object  " << mo 
+                   << " with base address " << mo->getBaseExpr() << " in lazyInitEmbeddedPointers!\n";
+      return;
+   }
+   std::pair<std::string,unsigned> p = m[(long)mo];
+   ref<Expr> offset = mo->getOffsetExpr(address);
+   llvm::errs() << "Inferring constraint for memory out of bound type="

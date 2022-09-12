@@ -1,0 +1,53 @@
+// This template can be used to specify the API modeling rules
+// Uncomment and use constants and identifiers that are meaningful in the context of the 
+// APIs you target when specifying your rule
+// See docs/PROMPT_Manual.txt for the side effect of each rule
+// See PROMPT_examples directory for a variety of examples (see the README.txt under each subdirectory)
+// Use the script/runAllTests.sh to execute the examples
+// Below we use [ ] to specify optional stuff
+
+global settings:
+
+// array size <number>;
+
+// null return <choice>;
+
+// init funcptrs to null <choice>;
+
+// model funcs with asm on but_use_original_with_pattern <substring> except <comma_sep_string_list>;
+
+// symbolize inline asm <choice>;
+
+// skip havocing singletons <choice>;
+
+data models:
+
+ // (<expression>) where <var_1> is argsize <funcname> arg <number_1> 
+ //                            [, <var_2> is arg <funcname> arg <number_2>, ..]; 
+
+ // (<expression) where <var_1> is <typename> field <number_1> 
+                               [, <var_2> is sizeof <typename> field <number_2>];  
+
+function models:
+
+ // alloc <funcname>  sizearg <argno> initzero <boolean> symbolize <boolean>;
+
+ // free <funcname> memarg <argno>;
+
+ // returnonly <funcname>;
+
+ // havoc args <comma_sep_argno_list> of <funcname>;
+
+ // <original_funcname> modeled by <model_funcname>;
+
+ 
+lifecycle model:
+
+ // entry-point <only_func_to_be_executed>
+
+ // <funcname_1> continue if (<expression>) where <var> is returnof <funcname_1> 
+                 [ ; <spec_for_other_entry_points]
+
+ // <funcname_1> [<number_1>] ; <funcname_2> [<number_2>]; ... ; <funcname_n> [<number_n>]
+
+

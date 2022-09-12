@@ -1,0 +1,14 @@
+global settings:
+
+array size 5;
+null return on;
+init funcptrs to null on;
+
+data models:
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

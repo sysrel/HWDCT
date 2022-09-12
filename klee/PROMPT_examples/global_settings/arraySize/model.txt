@@ -1,0 +1,12 @@
+global settings:
+
+array size 5;
+
+data models:
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

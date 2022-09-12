@@ -1,0 +1,184 @@
+PROMPT & PROSE Manual
+====================================================================================
+
+PROMPT extends the KLEE symbolic execution engine to perform component-level analysis, which 
+is known as under-constrained symbolic execution (or lazy initialization in the context of 
+symbolic execution). However, PROMPT differs than UC-KLEE by providing a specification 
+language, PROSE, that facilitates modeling an environment model that abstracts the 
+Application Programming Interface (API) of the system under analysis. PROMPT has been 
+developed with the goal of analyzing system software, which is often implemented in C and 
+uses low-level memory operations. One of the goals of PROMPT & PROSE is to avoid the need to 
+change the code under analysis. However, depending on the goal of the analysis, users may 
+still need to develop models of some of the API functions and compile then against the 
+analyzed code base.
+
+Assuming that the PROSE API model.txt has been prepared, to run PROMPT:
+
+$ export PROMPT=<full_path_to_build_dir>/bin/klee
+
+$ PROMPT -prose-api-model=model.txt sut.bc
+
+where model.txt is the PROSE API model and sut.bc denotes the bitcode for the system under 
+analysis. Examples of model.txt can be found under the PROMPT_examples directory. 
+Below we introduce the main features of PROSE. Note that PROMPT has some additional 
+command line options that can achieve some of the API modeling rules' side effects. However, 
+we recommend the users to prepare a PROSE API model and use it as shown above.
+
+Another goal of PROSE is to minimize the modeling effort by providing a way to specify rules 
+that can be applied globally. However, this may lead to an imprecise analysis. So, users can 
+also specify rules that involve specific data types and functions. In that case, type and 
+function specific modeling rules take precedence over the globally specified modeling rules. 
+Below, we explain major components of the PROSE API modeling language.
+
+
+PROSE allows four types of specifications:
+
+- Global settings
+- Data models
+- Function models
+- Life-cycle
+
+Section 1. Global Settings
+
+In lazy initialization or under-constrained symbolic execution, an important modeling 
+decision involves the size of memory region to be allocated for a pointer. It is possible 
+that the pointer refers to a single object or an array of objects. So, in general an array of 
+the base type with size greater than or equal to one needs to be allocated. If the array size 
+is too small, this would lead to false positives. On the other hand, if the array size is too 
+large, it would lead to false negatives and to high memory overhead during symbolic 
+execution. With these caveats, the user can specify an array size to be applied to any 
+pointer that gets lazily initialized using the ``array size <number>'' rule, where 
+<number> denotes a positive integer. Users can overwrite this rule for a specific type as 
+explained in Section 2 on Data Models.
+
+In PROSE, a function can be modeled either via another function that matches the signature 
+and is implemented in C or by specifying how to handle the arguments and the return value, 
+which we call the generic approach. If the function is modeled using the generic approach, 
+the return value is automatically symbolized.  However, if a modeled function returns a 
+pointer-type, the users can specify whether the NULL value should be considered as a 
+possible return value by using the ``null return <choice>'' rule, where <choice> can 
+be ``on'' or ``off''. Users can overwrite this rule for specific functions as explained 
+in Section 2 on Data Models.
+
+Another important aspect of lazy initialization of data structures is how to deal with the 
+function pointers. In some cases, the user needs to specify which function to use for a 
+specific field of a type. However, in some cases setting a function pointer field to NULL 
+works, e.g., if it is about an optional functionality that can be abstracted away. So, users 
+can specify whether the function pointers in lazily initialized data structures can be set to 
+NULL using the ``init funcptrs to null'' rule. Users can overwrite this rule for a 
+specific type as explained in Section 2 on Data Models.
+
+System code often come with inline assembly code. Although users can deal with inline 
+assembly via automated assembly lifters, PROSE provides two ways to model inline assembly, if 
+needed. The first way is to model the assembly instruction as a side-effect free operation 
+and symbolizing the return value, if any, using the ``symbolize inline asm on'' rule. The 
+other way is to automatically modeling functions that have inline assembly using the `` model 
+funcs with asm <choice>'' rule. The optional `` but_use_original_with_pattern <substring>'' 
+still enforces the originals of functions with names that include <substring> and `` except 
+<list>'' specifies exceptions to this setting for functions with names matching the list of 
+names specified in the comma separated list of strings <list>. The details of modeling such 
+functions are subject to other global and type and function specific rules as specified in 
+the PROSE API model.
+
+Users can also specify a global approach to dealing with the pointer arguments of functions 
+that are modeled using the generic approach. As mentioned above and detailed in Section 3 on 
+Function Models, such arguments can be chosen to be havoced (symbolized) to model the 
+side-effect of the function in the most abstract sense. Havocing process marks the object 
+pointed by the argument as symbolic. However, users can choose to skip or turn on this 
+havocing operation for functions modeled using the generic approach with the ``skip 
+havocing singletons <choice>' rule, which can be overwritten for specific functions and 
+specific arguments as explained in Section 3 on Function Models.
+
+Section 3. Data Modeling
+
+An important aspect of providing a precise context for a component under analysis is 
+describing the embedding relationship between data structures. System software utilizes the 
+embedding of one struct in another one to achieve polymorphism and code reuse. This 
+assumption may be leveraged to use the address of an embedded object to derive a pointer for 
+the embedding object, e.g., the container_of macro in the Linux kernel. If a proper context 
+is not provided, analysis of such code may lead to false positives and low coverage of the 
+code. PROSE allows users to specify such embedding relationship using the ``<ident_1> embeds 
+<ident_2>'' rule, where <ident_1> denotes the name of the embedding type and <ident_2> 
+denotes the name of the embedded type. If there are multiple fields of <ident_1> of type 
+<ident_2> then the one with the lowest index is assumed for lazy initialization purposes.
+  
+Another type of data modeling has to do with whether the lazy initialized struct type has a 
+single instance within the context of the analyzed components. If so, using the same instance 
+instead of creating a new instance improves the precision of the analysis. Users can specify 
+whether a data type should be treated as a singleton using the ``singleton <ident>' rule, 
+where <ident> is the type name.
+
+Finally, users can specify constraints about the fields of struct types. Such constraints 
+consist of two parts: the expression and the binding. In the expression part, users can use 
+model variables in constraints that involve arithmetic (+, -, *,/), boolean (!), and 
+relational operators (>, >=, <, <=, =, !=). These model variables need to be bound to some 
+entities in the code using comma separated ``<ident> is <entity>'' clauses. The types of 
+entities include the fields of struct types (<ident> field <number>), the arguments (<ident> 
+arg <number>) or the return values (returnof <ident>) of functions, and the sizes of arrays 
+or pointer fields (sizeof <ident> field <number>). The field and argument numbers start at 0 
+and consecutive numbers are used based on the order of their declaration in the function 
+signature or in the type definition. These constraints get enforced on the relevant objects 
+during lazy initialization, handling of callsites for functions modeled using the generic 
+approach, or handling of return instructions that cause transitioning from one life-cycle 
+entry to another.
+
+
+Section 3. Function Modeling
+
+When a software component is analyzed, it is important to capture the key interactions with 
+some of the API functions that are critical for achieving the analysis goal. Some of the API 
+functions, on the other hand, will not be that critical. So, PROSE provides various ways of 
+modeling an API function with different levels of detail.
+
+One way is to implement the model as a C function and specify the modeling relationship with 
+the original one using the <ident_1> modeled by <ident_2> rule, where <ident_1> and <ident_2> 
+denote the names of the original function and the model function, respectively.
+
+Another way of function modeling in PROSE is by specifying the side effects of the function 
+in terms of its return value and the pointer type arguments, which we call the generic 
+approach. Return values of functions modeled in this way are always symbolized. However, the 
+return value can be constrained as explained in Section 2 on Data Modeling. The pointer 
+arguments can be explicitly specified to be havoced by providing the indices of the arguments 
+using the rule ``havoc args <number_list> of <ident>''. Another option in the generic 
+approach is to symbolize the return value only and skip havocing of all pointer arguments, 
+which can be specified using the ``returnonly <ident>''.
+
+
+An important class of API functions involve memory allocation and deallocation. Such API can 
+be modeled in PROSE to abstract away framework specific details. An allocation function may 
+either return a pointer to the allocated memory or store the address in a pointer argument. 
+Users can use the ``alloc <ident> size_arg <number> init_zero <bool> symbolize <bool>'' the 
+argument index (<number>) that specifies the size of the memory allocation, whether the 
+allocated memory would be initialized with zeros, and whether the memory would be symbolized. 
+To model a deallocation function, one needs to specify the argument that holds the address of 
+the memory region to be deallocated using the ``free <ident> memarg <number>' rule, where 
+<number> denotes the argument index.
+
+Section 4. Life-cycle Modeling
+
+In a PROSE model, the components under analysis can be specified using a life-cycle model. If 
+there is only one component to be analyzed then this can be specified using the ``entry-point 
+<ident>'' rule, where <ident> denotes the name of the function to analyze. If there are 
+multiple functions to analyze in a sequential order then the sequential composition can be 
+specified as a semicolon separated list of life-cycle entries. A life-cycle entry can be just 
+a function name, which means that either the return type of the function is void or that 
+regardless of the return value the execution will continue with the next function in the 
+sequence. If the execution should continue only for certain cases of return values, e.g., 
+success cases, then the ``continue if <bound constraint>'' clause should be specified after 
+the function name. The bound constraints that are valid in this context are those that 
+involve the return values of the functions (``returnof <ident>'') in the life-cycle 
+sequence. Alternatively, users can choose to use the ``<ident> [ <number> ]'' rule to 
+specify the specific return value, <number>, for which the execution continues. 
+Finally, just specifying the name of the function <ident> indicates that the execution 
+must continue with the next life-cycle step when the default success return value of 0, 
+if any, is returned.
+
+The template model file docs/PROSE_template.txt can be used to write custom API 
+specifications. Examples can be found under the PROMPT_examples. README.txt under each test 
+directory explains the used features and how to execute the examples. The examples can also 
+be executed and checked against the expected test descriptions using the script 
+scripts/runAllTests.sh. Any issues are written to testresults.txt under the respective 
+directory.
+
+PROMPT currently supports LLVM 3.8. We are planning to support newer versions of LLVM in the 
+near future.

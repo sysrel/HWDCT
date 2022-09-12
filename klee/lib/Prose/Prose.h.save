@@ -1,0 +1,55 @@
+#include <vector>
+
+enum LeafType {CONST, IDENT};
+
+enum Op {LT, LTE, GT, GTE, EQ, NEQ, NEG, PLUS, MINUS, TIMES, DIV, NOOP};
+
+void printOp(Op);
+
+class ASTNode {
+ private:
+  std::vector<ASTNode*> children;
+  Op oper;
+ public: 
+  ASTNode();
+  ASTNode(Op);
+  int getNumChild();
+  void addChild(ASTNode *);
+  ASTNode *getChild(int);
+  virtual void print();
+};
+
+typedef struct ASTNode ASTNode;
+
+class ConstantNode : public ASTNode {
+ protected: 
+  int value;
+ public: 
+  ConstantNode(int v);
+  int getValue();
+};
+
+class IdentifierNode : public ASTNode {
+ protected:
+   std::string value;
+ public:
+   IdentifierNode(std::string s);
+   std::string getValue();
+};
+
+struct Binding {
+  std::string type;  
+  std::string entity;
+  unsigned index;
+};
+
+typedef struct Binding Binding;
+
+struct BoundAST {
+  ASTNode *ast;
+  std::map<std::string, Binding> bindings; 
+};
+
+typedef struct BoundAST BoundAST;
+
+void parse(std::string &str, BoundAST &bast);

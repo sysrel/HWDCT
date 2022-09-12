@@ -1,0 +1,11 @@
+global settings:
+
+data models:
+
+  singleton A;
+
+function models:
+
+lifecycle model:
+
+  foo[1] ; bar

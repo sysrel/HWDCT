@@ -1,0 +1,15 @@
+global settings:
+// models functions that has inline assembly 
+// other than those that include bar in their names with the exception for bar1
+model funcs with asm on but_use_original_with_pattern bar except bar1;
+// this one avoids the execution error when an assembly instruction is encountered inside bar
+symbolize inline asm on;
+
+data models:
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

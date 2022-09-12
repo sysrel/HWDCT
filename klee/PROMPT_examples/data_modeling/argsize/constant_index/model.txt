@@ -1,0 +1,12 @@
+global settings:
+
+data models:
+
+ (35 = w) where w is argsize foo arg 1;    
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

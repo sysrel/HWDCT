@@ -1,0 +1,14 @@
+global settings:
+
+skip havocing singletons on;
+
+data models:
+
+singleton A;
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

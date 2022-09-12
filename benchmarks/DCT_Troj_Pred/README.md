@@ -1,0 +1,1 @@
+In this directory, we have two benchmarks that utilize Trojan Prediction guided Trojan Payload Explanation, that is, ima_adpcm and rs232.

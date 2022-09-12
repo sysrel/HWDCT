@@ -1,0 +1,14 @@
+global settings:
+
+data models:
+
+ ((x + y) < w) where x is foo arg 0, y is foo arg 1, w is argsize foo arg 2;    
+
+ ((x + y) > 0) where x is foo arg 0, y is foo arg 1;
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

@@ -1,0 +1,12 @@
+global settings:
+
+data models:
+
+function models:
+
+ bar modeled by zot;
+
+lifecycle model:
+
+entry-point foo
+

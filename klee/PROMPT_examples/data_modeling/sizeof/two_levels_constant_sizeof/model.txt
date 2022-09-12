@@ -1,0 +1,15 @@
+global settings:
+
+data models:
+
+ (x > 24) where x is foo arg 0;
+
+ (x = 24) where x is foo arg 1;
+
+ (25 = w) where w is sizeof A field 2;    
+
+function models:
+
+lifecycle model:
+
+entry-point foo

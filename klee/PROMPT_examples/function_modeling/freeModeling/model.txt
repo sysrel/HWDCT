@@ -1,0 +1,13 @@
+global settings:
+
+data models:
+
+function models:
+
+ alloc bar sizearg 2 initzero false symbolize false;
+ free zot memarg 1;
+
+lifecycle model:
+
+entry-point foo
+

@@ -1,0 +1,18 @@
+global settings:
+
+ skip havocing singletons on;
+    
+data models:
+
+ singleton A;
+
+function models:
+ 
+ returnonly bar;
+ havoc args 0, 2 of bar;
+ havoc args 0 of zot;
+
+lifecycle model:
+
+entry-point foo
+

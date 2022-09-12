@@ -1,0 +1,18 @@
+global settings:
+
+data models:
+
+ (x > 0) where x is foo arg 0;
+
+ (y = 3) where y is A field 1;
+
+ (x != y) where x is A field 0, y is A field 1;
+
+ (z = w) where z is A field 0, w is sizeof A field 2;    
+
+function models:
+
+lifecycle model:
+
+entry-point foo
+

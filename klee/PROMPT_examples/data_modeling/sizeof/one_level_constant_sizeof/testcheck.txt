@@ -1,0 +1,5 @@
+1
+assert,no,17
+assert,no,19
+ptr,no,20
+ptr,yes,21
