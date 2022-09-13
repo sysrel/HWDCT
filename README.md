@@ -1,6 +1,6 @@
-# DCT
+# HWDCT
 ## Description
-This is the repository for the DCT tool described in our [TODAES '22](https://dl.acm.org/doi/10.1145/3558392) paper.
+This is the repository for the HWDCT tool described in our [TODAES '22](https://dl.acm.org/doi/10.1145/3558392) paper.
 
 ## Publication
 * Ruochen Dai, Tuba Yavuz.
@@ -67,13 +67,13 @@ cp verilator/verilated.mk /usr/local/share/verilator/include
  git clone https://github.com/sysrel/HWDCT
 ```
 
-2. **Configure DCT:**
+2. **Configure HWDCT:**
 
 ```bash
-mkdir dct_build_dir
+mkdir hwdct_build_dir
 ```
 
-DCT must be built “out of source” so first make a binary build directory!!!
+HWDCT must be built “out of source” so first make a binary build directory!!!
 
 ```bash
 $ cd klee_build_dir
@@ -92,10 +92,10 @@ cmake \
   -DLLVM_CONFIG_BINARY=<PATH_TO_LLVM38_llvm-config> \
   -DLLVMCC=<PATH_TO_clang-3.8> \
   -DLLVMCXX=<PATH_TO_clang++-3.8>
-  <DCT_SRC_DIRECTORY>
+  <HWDCT_SRC_DIRECTORY>
 ```
 
-3. **Build DCT:**
+3. **Build HWDCT:**
 
 ```bash
 $ make
