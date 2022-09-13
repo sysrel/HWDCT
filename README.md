@@ -61,10 +61,10 @@ cp verilator/verilated.mk /usr/local/share/verilator/include
 
 ## Build
 
-1. **Get DCT source:**
+1. **Get HWDCT source:**
 
 ```bash
- git clone https:****/DCT.git
+ git clone https://github.com/sysrel/HWDCT
 ```
 
 2. **Configure DCT:**
