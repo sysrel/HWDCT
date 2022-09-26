@@ -4,7 +4,8 @@ This is the repository for the HWDCT tool described in our [TODAES '22](https://
 
 ## Publication
 *Ruochen Dai and Tuba Yavuz. A Symbolic Approach to Detecting Hardware Trojans Triggered by Don’t Care Transitions. Accepted to ACM Transactions on Design Automation of Electronic Systems, 2022.
-https://nam10.safelinks.protection.outlook.com/?url=https%3A%2F%2Fdoi.org%2F10.1145%2F3558392&amp;data=05%7C01%7Cruochendai%40ufl.edu%7C5efa56ed482145372dac08da9fc5f367%7C0d4da0f84a314d76ace60a62331e1b84%7C0%7C0%7C637997969779219388%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&amp;sdata=KfyorwJcl9Cj0bScvFlon3fY6rILEO0JrTUwpvskhSQ%3D&amp;reserved=0
+
+Please refer to this link for more details: https://nam10.safelinks.protection.outlook.com/?url=https%3A%2F%2Fdoi.org%2F10.1145%2F3558392&amp;data=05%7C01%7Cruochendai%40ufl.edu%7C5efa56ed482145372dac08da9fc5f367%7C0d4da0f84a314d76ace60a62331e1b84%7C0%7C0%7C637997969779219388%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&amp;sdata=KfyorwJcl9Cj0bScvFlon3fY6rILEO0JrTUwpvskhSQ%3D&amp;reserved=0
 
 ## Prerequisites
 ### Klee
