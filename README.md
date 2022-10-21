@@ -43,7 +43,7 @@ For additional information, please refer to website: [http://www.veripool.org/pr
 Update the Makefile with your own `KLEE_ROOT` and `KLEE_INCLUDE`:
 
 ```
-vim verilator/verilated.mk
+vim Verilator/verilated.mk
 KLEE_ROOT = (use your own klee_root)
 KLEE_INCLUDE = (use your own klee_include)
 ```
@@ -52,7 +52,7 @@ Update Verilator's Makefile with Klee and WLLVM:
 
 ```
 mv /usr/local/share/verilator/include/verilated.mk /usr/local/share/verilator/include/verilated.mk.bak
-cp verilator/verilated.mk /usr/local/share/verilator/include
+cp Verilator/verilated.mk /usr/local/share/verilator/include
 ```
 
 
