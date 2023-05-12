@@ -20,8 +20,7 @@ OBJCACHE ?=
 CFG_WITH_CCWARN = no
 CFG_WITH_LONGTESTS = no
 
-KLEE_ROOT = /home/UFAD/ruochendai/PROMPT
-PROMPT_ROOT = /home/UFAD/ruochendai
+HWDCT_ROOT = /home/UFAD/ruochendai/HWDCT
 # Select newest language
 CFG_CXXFLAGS_STD_NEWEST = -std=gnu++14
 # Select oldest language (for Verilator internal testing only)
@@ -55,7 +54,7 @@ VK_CPPFLAGS_ALWAYS += \
 		-MMD \
 		-I$(VERILATOR_ROOT)/include \
 		-I$(VERILATOR_ROOT)/include/vltstd \
-		-I$(KLEE_ROOT)/klee/include \
+		-I$(HWDCT_ROOT)/klee/include \
 		-DVM_COVERAGE=$(VM_COVERAGE) \
 		-DVM_SC=$(VM_SC) \
 		-DVM_TRACE=$(VM_TRACE) \
@@ -84,7 +83,7 @@ LDFLAGS  += $(M32)
 CPPFLAGS += $(USER_CPPFLAGS)
 LDFLAGS  += $(USER_LDFLAGS)
 LDLIBS   += $(USER_LDLIBS)
-LDLIBS   += -L$(PROMPT_ROOT)/prompt_build_dir/lib -lkleeRuntest 
+LDLIBS   += -L$(HWDCT_ROOT)/hwdct_build_dir/lib -lkleeRuntest 
 # Add flags from -CFLAGS and -LDFLAGS on Verilator command line
 CPPFLAGS += $(VM_USER_CFLAGS)
 LDFLAGS  += $(VM_USER_LDFLAGS)
