@@ -106,36 +106,51 @@ void klee_record_step_trace_locally(int stepNo) { } //Versym
 
 void klee_add_assume(void *s, uintptr_t x) {}
 
+///@{ Analyze hack@dac
+void klee_check_constraint_var(void *s, int sigOne, ...) {}
+///@}
+
+/* start of hybird fuzzing implementations */
+void klee_add_guard_signal(void *s, int sigOne) {}
+/* end of hybird fuzzing implementations */
+
+/* Ruochen */
+void klee_clear_pc() {}
+void klee_get_model(int Name1, void *sName1, ...) {}
+void klee_print_value(int Name1, int Name2, int Name3, int Name4) {}
+void klee_print_value_adress(void *sName1, void *sName2, void *sName3, void *sName4){}
+
+void klee_record_initial_state(void *s, int Name1, ...) {}
+void klee_check_reach_initial_state(void *retval, void *init, void *cur) {}
+void klee_check_reach_initial_state_reg(void *retval, void *init, int reg1, ...) {}
+/* Ruochen */
+
 void klee_get_input_pattern(void *s, int Name1, int Name2, int Name3, int Name4, int Name5, int Name6/*, int Name7, int Name8, int Name9, int Name10, int Name11, int Name12*/){}
 void klee_get_input_pattern_previous_cycle(void *s, int Name1, int Name2, int Name3, int Name4, int Name5, int Name6/*, int Name7, int Name8, int Name9, int Name10, int Name11, int Name12*/){}
 void klee_clear_path_constraint(void *s){}
 
-void klee_add_metadata_globally(void *s, int value, int inName) {} //for 1 input variable FSM
-void klee_add_metadata_globally_TwoInput(void *s, int value, int inName, int inNameTwo) {}//for 2 input variables FSM
-void klee_add_metadata_globally_ThreeInput(void *s, int value, int inName, int inNameTwo, int inNameThree) {}//for 3 input variables FSM
-void klee_add_metadata_globally_FourInput(void *s, int value, int inName, int inNameTwo, int inNameThree, int inNameFour) {}//for 4 input variables FSM
-void klee_add_metadata_globally_FiveInput(void *s, int value, int inName, int inNameTwo, int inNameThree, int inNameFour, int inNameFive) {}//for 5 input variables FSM
+///@{ HWDCT extension
+void klee_add_metadata_globally(void *s, int value) {} //for 1 input variable FSM
+void klee_check_dontcare_transition_globally(void *s, int stateReg, int srcState, int destState){} //for 1 input variable FSM function
 
-void klee_find_all_transitions_from_given_src_globally(void *s, int depth, int srcState, int sinkState, int protectState) {}//for finding all transitions from a given src to a protecteState
-void klee_find_all_transitions_from_given_unreachable_src_one_step_globally(void *s, int value, int inNameOne, int inNameTwo, int inNameThree, void *s1, int depth){}
+void klee_add_forward_reg_metadata_globally(void *s, int state, int argTwo, ...){} 
+void klee_add_and_check_abstract_reg_metadata_globally(void *s, int state, int argTwo,...){}
 
-void klee_check_dontcare_transition_globally(void *s, int value, int inNameOne, int inNameTwo, int inNameThree){} //for 1 input variable FSM function
-void klee_check_dontcare_transition_globally_TwoInput(void *s, int value, int inNameOne, int inNameTwo, int inNameThree, int inNameFour){}//for 2 input variables FSM function
-void klee_check_dontcare_transition_globally_ThreeInput(void *s, int value, int inNameOne, int inNameTwo, int inNameThree, int inNameFour, int inNameFive){}//for 3 input variables FSM function
-void klee_check_dontcare_transition_globally_FourInput(void *s, int value, int inNameOne, int inNameTwo, int inNameThree, int inNameFour, int inNameFive, int inNameSix){}//for 4 input variables FSM function
-void klee_check_dontcare_transition_globally_FiveInput(void *s, int value, int inNameOne, int inNameTwo, int inNameThree, int inNameFour, int inNameFive, int inNameSix, int inNameSeven){}//for 5 input variables FSM function
+void klee_add_output_metadata_globally(void *s, int valuePrevState, int valueNextStat, int valueIn, int valueOut){}
+void klee_add_back_output_metadata_globally(void *s, int valuePrevState, int valueNextStat, int valueIn, int valueOut){}
+void klee_detect_trojan_for_output(void *set1, void *set2){};
+void klee_find_all_transitions_from_given_unreachable_src_one_step_globally(void *s, int stateReg, int srcState, int destState, void *s1, int depth){};
+///@}
+  
+void klee_find_all_transitions_from_given_src_globally(void *s, int depth, int srcState, int sinkState, int protectState){};//for finding all transitions from a given src to a protecteState
   
 void klee_add_inter_metadata_globally(void *s, int numRound, long long int interVal){}   
 void klee_add_transition_metadata_globally(void *s, int valuePrev, int valueNext, int inName){}  //for 1 input variable transition
 
-void klee_add_forward_reg_metadata_globally(void *s, int state, int argTwo, int argThree, int argFour, int argFive, int argSix, int argSeven, int argEight, int argNine, int argTen, int argEle, int argTwel, int argThir){} 
-void klee_add_and_check_abstract_reg_metadata_globally(void *s, int state, int argTwo, int argThree, int argFour, int argFive, int argSix, int argSeven, int argEight, int argNine, int argTen, int argEle, int argTwel, int argThir){}//
+
 void klee_add_one_forward_reg_metadata_globally(void *s, int state, int arg2){}
 void klee_add_and_check_abstract_one_reg_metadata_globally(void *s, int state, int arg2){}
-  
-void klee_add_output_metadata_globally(void *s, int valuePrevState, int valueNextStat, int valueIn, int valueOut, int inName){}  //for 1 input variable output
-void klee_add_back_output_metadata_globally(void *s, int valuePrevState, int valueNextStat, int valueIn, int valueOut, int inName){}  //for 1 input variable backward output
-void klee_detect_trojan_for_output(void *set1, void *set2){};//for output trojan detection function
+
 void klee_check_DCT_finish_time(){};
 
 void klee_set_source_state(int srcState){};//set source state
