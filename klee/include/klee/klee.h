@@ -168,45 +168,78 @@ extern "C" {
   void klee_record_step_trace_locally(int stepNo); //Versym
   
   void klee_check_and_record_path_condition(void *s);
-  void klee_check_and_record_path_condition_with_assume(void *s, uintptr_t x);
+  void klee_check_and_record_path_condition_with_assume(void *, uintptr_t x);
   //void klee_check_and_record_path_condition_with_assume(void *, uintptr_t condition1, uintptr_t condition2);
   //void klee_check_and_record_path_condition_with_assume(void *, uintptr_t condition1, uintptr_t condition2, uintptr_t condition3);
   //void klee_check_and_record_path_condition_with_assume(void *, int value, int dest);
   void klee_add_assume(void *, uintptr_t condition);
+  
+
+/* start of hybird fuzzing implementations */
+  void klee_add_guard_signal(void *, int);
+/* end of hybird fuzzing implementations */
+
+///@{ Analyze hack@dac
+void klee_check_constraint_var(void *, int, ...);
+///@}
+
+/* Ruochen */
+/*void klee_get_model1(int a, int b) { printf("int, int\n"); }
+void klee_get_mode2(double a, int b) { printf("double, int\n"); }
+void klee_get_mode3(int a, int b, int c) { printf("int, int, int\n"); }
+void klee_get_model4(void) { printf("unknown arguments\n"); }
+
+#define klee_get_model(...) OVERLOAD(klee_get_model, (__VA_ARGS__), \
+    (klee_get_model_4, (int, void *, int, void *, int, void *, int, void *)), \
+    (klee_get_model_6, (int, void *, int, void *, int, void *, int, void *, int, void *, int, void *))\
+)
+#define OVERLOAD_ARG_TYPES (int, void *)
+#define OVERLOAD_FUNCTIONS (klee_get_model)
+*/
+void klee_clear_pc();
+void klee_get_model(int, void *, ...);
+void klee_print_value(int , int , int , int);
+void klee_print_value_adress(void *, void *, void *, void *);
+
+void klee_record_initial_state(void *, int, ...);
+void klee_check_reach_initial_state(void *, void *, void *);
+void klee_check_reach_initial_state_reg(void *, void *, int, ...);
+/* Ruochen */
+
+
   void klee_get_input_pattern(void *s, int Name1, int Name2, int Name3, int Name4, int Name5, int Name6/*, int Name7, int Name8, int Name9, int Name10, int Name11, int Name12*/);
   void klee_get_input_pattern_previous_cycle(void *s, int Name1, int Name2, int Name3, int Name4, int Name5, int Name6/*, int Name7, int Name8, int Name9, int Name10, int Name11, int Name12*/);
   void klee_clear_path_constraint(void *s);
   
+  ///@{ HWDCT extension
+  // DCT prediction
+  void klee_add_metadata_globally(void *, int value);
+  void klee_check_dontcare_transition_globally(void *, int, int, int);
   
-  void klee_add_metadata_globally(void *, int value, int inName); //for 1 input variable FSM function
-  void klee_add_metadata_globally_TwoInput(void *, int value, int inName, int inNameTwo);//for 2 input variables FSM function
-  void klee_add_metadata_globally_ThreeInput(void *, int value, int inName, int inNameTwo, int inNameThree);//for 3 input variables FSM function
-  void klee_add_metadata_globally_FourInput(void *, int value, int inName, int inNameTwo, int inNameThree, int inNameFour);//for 4 input variables FSM function
-  void klee_add_metadata_globally_FiveInput(void *, int value, int inName, int inNameTwo, int inNameThree, int inNameFour, int inNameFive);//for 5 input variables FSM function
+  // Trojan prediction
+  void klee_add_forward_reg_metadata_globally(void *, int state, int reg2, ...);
+  void klee_add_and_check_abstract_reg_metadata_globally(void *, int state, int reg2, ...);
   
+  // Trojan explanation
+  void klee_add_output_metadata_globally(void *, int prevStat, int nextStat, int valueIn, int valueOut);
+  void klee_add_back_output_metadata_globally(void *, int prevStat, int nextStat, int valueIn, int valueOut);
+  void klee_detect_trojan_for_output(void *, void *);
+  
+  // DCT Aware Reachbility Analysis
+  void klee_find_all_transitions_from_given_unreachable_src_one_step_globally(void *, int, int, int, void *, int);
   void klee_find_all_transitions_from_given_src_globally(void *, int depth, int srcState, int sinkState, int protectState);//for finding all transitions from a given src to a protected state.
-  void klee_find_all_transitions_from_given_unreachable_src_one_step_globally(void *, int, int, int, int, void *, int);//for finding all transitions from a given unreachable src to a protected state.
+  ///@}
   
-  
-
-  void klee_check_dontcare_transition_globally(void *, int, int, int, int);//for 1 input variable FSM function
-  void klee_check_dontcare_transition_globally_TwoInput(void *, int, int, int, int, int);//for 2 input variables FSM function
-  void klee_check_dontcare_transition_globally_ThreeInput(void *, int, int, int, int, int, int);//for 3 input variables FSM function
-  void klee_check_dontcare_transition_globally_FourInput(void *, int, int, int, int, int, int, int);//for 4 input variables FSM function
-  void klee_check_dontcare_transition_globally_FiveInput(void *, int, int, int, int, int, int, int, int);//for 5 input variables FSM function
  
   void klee_add_inter_metadata_globally(void *, int numRound, long long int interVal); //for 1 input variable transition function
   void klee_add_transition_metadata_globally(void *, int valuePrev, int valueNext, int inName); //for 1 input variable transition function
   
-  void klee_add_forward_reg_metadata_globally(void *, int state, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8, int arg9, int arg10, int arg11, int arg12, int arg13);
-  void klee_add_and_check_abstract_reg_metadata_globally(void *, int state, int arg2, int arg3, int arg4, int arg5, int arg6, int arg7, int arg8, int arg9, int arg10, int arg11, int arg12, int arg13);
+  
   void klee_add_one_forward_reg_metadata_globally(void *, int state, int arg2);
   void klee_add_and_check_abstract_one_reg_metadata_globally(void *, int state, int arg2);
   
   
-  void klee_add_output_metadata_globally(void *, int valuePrevStat, int valueNextStat, int valueIn, int valueOut, int inName); //for 1 input variable output function
-  void klee_add_back_output_metadata_globally(void *, int valuePrevStat, int valueNextStat, int valueIn, int valueOut, int inName); //for 1 input variable backwardoutput function
-  void klee_detect_trojan_for_output(void *, void *);//for output trojan detection function
+  
   void klee_check_DCT_finish_time();//for output trojan detection function
   
   void klee_set_source_state(int srcState);//set source state
