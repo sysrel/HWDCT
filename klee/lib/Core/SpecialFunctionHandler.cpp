@@ -43,6 +43,24 @@
 using namespace llvm;
 using namespace klee;
 
+/* Ruochen */
+cl::opt<unsigned int>
+NUMInputPattern("num-input-pattern",
+             cl::desc("number of input patterns\n"),
+             cl::init(0));
+			 
+cl::opt<std::string>
+PatternSolveTimeFile("pattern-solve-time",
+                 cl::desc("Name of the file that record the pattern solve time\n")); 
+
+std::fstream *patternTime = NULL;
+double patternSolveStartTime;
+
+bool alreadyGotAnInputPattern = false;
+extern std::map<long, std::set<ref<Expr>>> globCurrentConstraintMap; //from executor.cpp
+//extern std::map<long, std::vector<ref<Expr>>> globCurrentConstraintMap;; //from executor.cpp
+/* Ruochen */
+
 std::map<ref<Expr>, std::vector<ref<Expr> > > globalPCVctMap;
 std::map<ref<Expr>, std::set<ref<Expr> > > globalASSctMap; //global assertion signal set
 
@@ -53,11 +71,15 @@ std::map<ref<Expr>, std::set<ref<Expr> > > globalFourInputSetMap;/* For 4 input 
 std::map<ref<Expr>, std::set<ref<Expr> > > globalFiveInputSetMap;/* For 5 input variable FSM */
 std::map<ref<Expr>, std::set<ref<Expr> > > globalMetadataSetMap;
 
+std::map<ref<Expr>, std::vector<ref<Expr> > > globalInitialStateSetMap; /* For record all register values in initial state*/
+
 std::map<ref<Expr>, std::vector<ref<Expr> > > globalTransitionPrevVectorMap;
 std::map<ref<Expr>, std::vector<ref<Expr> > > globalTransitionNextVectorMap;
 std::map<ref<Expr>, std::vector<ref<Expr> > > globalTransitionInputVectorMap;
 
-std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> , ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>>> > globalRegTupleForward; //arg[1]->stateVar, other is regVar
+//std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> , ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>>> > globalRegTupleForward; //arg[1]->stateVar, other is regVar
+std::vector<ref<Expr>> globTVForward;
+std::map<ref<Expr>, std::vector<ref<Expr>>> globalRegTupleForward; 
 std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> , ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>>> > globalRegTupleBackward;
 std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>>> > globalOneRegTupleForward; //arg[1]->stateVar, other is regVar
 std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>>> > globalOneRegTupleBackward;
@@ -65,10 +87,10 @@ static int numofstates = 0;
 double dontCareFinishTime = 0;
 double addBackOutputfinishTime;
 
-std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleForward;
-std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleBackward;
+std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleForward;
+std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleBackward;
 
-std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, double > > > globalOutputTupleFindAllTransFromSrc;
+std::map<ref<Expr>, std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr> > > > globalOutputTupleFindAllTransFromSrc;
 
 std::map<ref<Expr>, std::vector<ref<Expr> > > globalOutputVectorMap;
 
@@ -274,27 +296,34 @@ static SpecialFunctionHandler::HandlerInfo handlerInfo[] = {
   add("realloc", handleRealloc, true),
 
   /* SYSREL EXTENSION */
+  ///@{ Analyze hack@dac 21 benchmark
+  add("klee_check_constraint_var", handleCheckConstraintVarGlobally, false),
+  ///@}
+  
+  /* Ruochen */
+  add("klee_clear_pc", handleClearPrevPCGlobally, false),
+  add("klee_get_model", handleAcquireInputModelGlobally, false),
+  add("klee_print_value", handlePrintPatternValue, false),
+  add("klee_print_value_adress", handlePrintPatternAdressValue, false),
+  /* Ruochen */  
   add("klee_set_metadata", handleSetMetadata, false),
   add("klee_get_metadata", handleGetMetadata, true),
   
   add("klee_check_and_record_path_condition", handleCheckAndRecordPCGlobally, false),
   add("klee_check_and_record_path_condition_with_assume", handleCheckAndRecordPCWithAssumeGlobally, false),
-  add("klee_add_assume", handleAddAssumeAsPC, false),  
+  add("klee_record_initial_state", handleRecordInitialStateGlobally, false),
+  add("klee_check_reach_initial_state", handleCheckReachInitialStateGlobally, false),
+  add("klee_check_reach_initial_state_reg", handleCheckReachInitialStateRegGlobally, false),
+  add("klee_add_assume", handleAddAssumeAsPC, false),
+  /* hybrid fuzzing exetension start*/
+  add("klee_add_assume", handleAddGuardSignal, false),
+  /* hybrid fuzzing exetension end  */
   add("klee_get_input_pattern", handleAcquireInputPatternGlobally, false),
   add("klee_get_input_pattern_previous_cycle", handleAcquireInputPatternPreviousCycleGlobally, false),
   add("klee_clear_path_constraint", handleClearPCGlobally, false),
   
   add("klee_add_metadata_globally", handleAddMetadataGlobally, false),
-  add("klee_add_metadata_globally_TwoInput", handleAddMetadataGloballyTwoInput, false),
-  add("klee_add_metadata_globally_ThreeInput", handleAddMetadataGloballyThreeInput, false),
-  add("klee_add_metadata_globally_FourInput", handleAddMetadataGloballyFourInput, false),
-  add("klee_add_metadata_globally_FiveInput", handleAddMetadataGloballyFiveInput, false),
-
   add("klee_check_dontcare_transition_globally", handleDontCareTransitionGlobally, false), 
-  add("klee_check_dontcare_transition_globally_TwoInput", handleDontCareTransitionGloballyTwoInput, false), 
-  add("klee_check_dontcare_transition_globally_ThreeInput", handleDontCareTransitionGloballyThreeInput, false), 
-  add("klee_check_dontcare_transition_globally_FourInput", handleDontCareTransitionGloballyFourInput, false), 
-  add("klee_check_dontcare_transition_globally_FiveInput", handleDontCareTransitionGloballyFiveInput, false),
 
   add("klee_find_all_transitions_from_given_src_globally", handleAllTransitionFromGivenSrcGlobally, false),     
   add("klee_find_all_transitions_from_given_unreachable_src_one_step_globally", handleAllTransitionFromGivenUnreachableSrcOneStepGlobally, false),   
@@ -323,6 +352,7 @@ static SpecialFunctionHandler::HandlerInfo handlerInfo[] = {
   add("klee_add_output_metadata_globally", handleAddOutputMetadataGlobally, false),
   add("klee_add_back_output_metadata_globally", handleAddBackOutputMetadataGlobally, false),
   add("klee_detect_trojan_for_output", handleDetectOutputTrojan, false),
+  add("klee_find_all_transitions_from_given_unreachable_src_one_step_globally", handleDCTAwarePath, false),
   add("klee_check_DCT_finish_time", handleCheckDCTfinishTime, false),
   add("klee_set_source_state", handleSetSourceState, false),
   add("klee_set_dest_state", handleSetDestState, false),
@@ -556,8 +586,20 @@ void SpecialFunctionHandler::handleAssertFail(ExecutionState &state,
                                               KInstruction *target,
                                               std::vector<ref<Expr> > &arguments) {
   assert(arguments.size()==4 && "invalid number of arguments to __assert_fail");
+  StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+  if (dontcareStats == NULL) {
+	std::string fname = "patternTime.txt";
+	if (DontCareTransFile != "")
+	  fname = DontCareTransFile; 
+	dontcareStats = new std::fstream(fname, std::fstream::out);
+  }
+
+    std::fstream & out = *dontcareStats;
+	
+	  out << "Total assert failure time: " << util::getWallTime() - dontCareStartTime << "s/" << (util::getWallTime() - dontCareStartTime)/60.0 << "min\n";
+	
   executor.terminateStateOnError(state,
-				 "ASSERTION FAIL: " + readStringAtAddress(state, arguments[0]),
+				 "ASSERTION FAIL: " + readStringAtAddress(state, arguments[0]) + "\nTIME(s): " + std::to_string(util::getWallTime() - dontCareStartTime),
 				 Executor::Assert);
 }
 
@@ -998,6 +1040,43 @@ void SpecialFunctionHandler::handleGetMetadata(ExecutionState &state,
 }
 
 
+void SpecialFunctionHandler::handleCheckConstraintVarGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+	llvm::errs() << "Calling function klee_check_constraint_var():\n";
+  std::vector<ref<Expr> > ms;
+	
+	if (dontcareStats == NULL) {
+       std::string fname = "input_Troj.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+  std::fstream & out = *dontcareStats;
+	
+	if (globalInitialStateSetMap.find(arguments[0]) != globalInitialStateSetMap.end()) 
+		ms = globalInitialStateSetMap[arguments[0]];
+	
+	//llvm::errs() << "Initial state contains " << arguments.size() << " registers \n";
+	out << "Analyzing " << arguments.size() << " internal registers \n";
+	for (auto i = 1; i < arguments.size() ; i++) {
+		if (arguments[i]->getKind() == Expr::Constant)
+			out << "adding Constant ";
+		else
+			out << "adding Symbolic ";
+		llvm::errs() << "arguments[" << i << "] = " << arguments[i] << "\n";
+		ms.push_back(arguments[i]);
+		
+		std::string str;
+		llvm::raw_string_ostream info(str);
+		ExprPPrinter::printSingleExpr(info, arguments[i]);
+		out << "initial constraint: " << info.str() << "\n";
+	}
+	globalInitialStateSetMap[arguments[0]] = ms;
+}
+
+
 /* arguments[0]: condition
    arguments[1]: key for true cases
    arguments[2]: key for false cases
@@ -1121,6 +1200,191 @@ void SpecialFunctionHandler::handleAddMetadataGloballyOnCondition
 
   globalMetadataMessage[dp] = readStringAtAddress(state, arguments[3]);
 }
+
+
+/* Ruochen */
+////////////////////////////////////record previous pc/////////////////////////////
+void SpecialFunctionHandler::handleClearPrevPCGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+				
+	/*std::vector<ref<Expr> > ms = state.constraints.getConstraints();//contain previous pc
+    globalPCVctMap[arguments[0]] = ms; */
+	state.constraints.clear();
+	if (!state.constraints.empty()) 
+		executor.terminateStateOnExecError(state, "state.constraints is NOT empty, potential error!");
+	llvm::errs() << "After state.constraints.clear, constraints: ";
+	ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+}
+
+////////////////////////////////////Get input model/////////////////////////////
+//void SpecialFunctionHandler::handleAcquireInputModelGlobally(ExecutionState &state,
+void SpecialFunctionHandler::handleAcquireInputModelGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+	//make sure the # arguments is even
+ static unsigned offset = 0;
+	assert(arguments.size()%2==0 &&
+         "invalid number of arguments to klee_get_model");
+		 
+	//cause we may have more than ONE input patterns that are equivalent classes, we only wanna ONE input pattern here
+	StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "patternTime.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+	
+	if (alreadyGotAnInputPattern){
+		state.constraints.clear();
+		llvm::errs() << "alreadyGotAnInputPattern=True, terminate other equivalent classes!\n";
+		executor.terminateState(state);
+		return;
+	}
+		
+	llvm::errs() << "HANDLE Acquire input model args " <<arguments.size() << "\n";
+	if (arguments.size() != 2*NUMInputPattern)
+		executor.terminateStateOnError(state, 
+                                     "wrong arguments given to klee_get_model[_name]", 
+                                     Executor::User);
+	
+	//llvm::errs() << "From klee_get_model: \n";
+	for (auto i=0; i<2*NUMInputPattern; i=i+1)	
+		llvm::errs() << " arguments[" << i << "]="<< arguments[i] <<  "\n";
+	
+	//clear current state's constraint
+	state.constraints.clear();
+	if (!state.constraints.empty()) 
+		executor.terminateStateOnExecError(state, "state.constraints is NOT empty, potential error!");
+	//llvm::errs() << "After state.constraints.clear, constraints: ";
+	//ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+	
+	//add constraint from globCurrentConstraintMap to current state's constraint
+	//llvm::errs() <<"constraints in globCurrentConstraintSet: \n";
+	std::set<ref<Expr>> ms;
+	//std::vector<ref<Expr>> ms;
+	if (globCurrentConstraintMap.find((long)&state) != globCurrentConstraintMap.end()) {
+        ms = globCurrentConstraintMap[(long)&state];
+    }
+	else {
+       //llvm::errs() << "No constraints from  globCurrentConstraintMap for state " << &state << "! Termiante\n";
+	   executor.terminateStateOnError(state, 
+										"Failed to acquire constraints from globCurrentConstraintMap", 
+										Executor::User);
+    }
+	for (auto v : ms) {
+       executor.addConstraint(state, v);
+       //llvm::errs() << "constraint" << v << " added to current's state\n";		
+	}
+	//llvm::errs() << "After addConstraint, state.constraints: ";
+	//ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+	
+	//acquire model of each input signal
+	unsigned num = NUMInputPattern;
+	bool Res_arg[2*num] = {false};
+	bool Success_arg[2*num] = {false};
+	ref<ConstantExpr> model_arg[2*num] = {NULL};
+	std::vector<uint64_t> ret_vec;
+	
+	for (auto i=0; i<2*num; i=i+2) {
+		llvm::errs() << "arguments[" << i << "] = " << arguments[i] << "\n";
+		std::string str_dbg;
+		llvm::raw_string_ostream info(str_dbg);
+		ExprPPrinter::printSingleExpr(info, arguments[i]);
+		out << "\narguments[" << i << "] = " << info.str() << "\n";
+		Success_arg[i] = executor.solver->mayBeTrue(state, arguments[i], Res_arg[i]);
+		if (Success_arg[i] && Res_arg[i]) {
+			llvm::errs() << "Success mayBeTrue() return\n";
+			if (executor.solver->getValue(state, arguments[i], model_arg[i]))
+				llvm::errs() << "Create model for arguments[" << i << "] successfully! Which is: " << model_arg[i] << "\n";
+			else {
+				out << "Failed to get model for arguments[" << i << "]\n\n";
+				executor.terminateStateOnError(state, 
+										"Failed to get model of arguments from getValue", 
+										Executor::User);
+			}
+			
+			// find the memory object (MemoryObject) mo that corresponds to current arg in state
+			ObjectPair op; //def: typedef std::pair<const MemoryObject*, const ObjectState*> ObjectPair;
+			bool success;
+			executor.solver->setTimeout(((Executor*)(theInterpreter))->coreSolverTimeout); 
+			if (!state.addressSpace.resolveOne(state, executor.solver, arguments[i+1], op, success)) {
+				llvm::errs() << "Before toConstant, arguments[i+1]=" << arguments[i+1] << "\n";
+				arguments[i+1] = ((Executor*)(theInterpreter))->toConstant(state, arguments[i+1], "resolveOne failure");
+				llvm::errs() << "After toConstant, arguments[i+1]=" << arguments[i+1] << "\n";
+				success = state.addressSpace.resolveOne(cast<ConstantExpr>(arguments[i+1]), op);
+			}
+			executor.solver->setTimeout(0);
+			if (success) {
+				const MemoryObject *mo = op.first;
+				//const ObjectState *os = state.addressSpace.findObject(mo);
+				ObjectState *wos = state.addressSpace.getWriteable(op.first, op.second);	
+				wos->write64(0, (model_arg[i]->getZExtValue()));
+				llvm::errs() << "Writing model_arg[" << i << "]->getZExtValue()=" << model_arg[i]->getZExtValue() << " to mo\n";
+				std::string str_temp;
+				llvm::raw_string_ostream info2(str_temp);
+				ExprPPrinter::printSingleExpr(info2, arguments[i]);
+				out << "\nWriting '" << info2.str() << "'/";
+				out << "model_arg[" << i << "]->getZExtValue()=" << model_arg[i]->getZExtValue() << " to mo\n\n";
+				//result = wos->read(0, mo->size);
+				//llvm::errs() << "after read, result = " << result <<  "; Width = " << result->getWidth() << "\n";
+        
+			}
+				
+			else 
+				executor.terminateStateOnError(state, 
+										"Failed to get objectpair from resolveOne", 
+										Executor::User);
+			
+		}
+		else {
+			continue;
+			out << "\nmayBeTrue() Failed for arguments[" << i << "]\n";
+			/*executor.terminateStateOnError(state, 
+                                     "Failed to get model of inputs", 
+                                     Executor::User);*/
+		}
+	}
+	
+	out << "\nInput pattern solve time: " << util::getWallTime() - dontCareStartTime << "s\n";
+	llvm::errs() << "Input pattern solve time: " << util::getWallTime() - dontCareStartTime << "s\n";
+	        alreadyGotAnInputPattern = true;
+		    return;
+	//clean constraint one more time, cause the next step running is simply concrete value
+	state.constraints.clear();
+	if (!state.constraints.empty()) 
+		executor.terminateStateOnExecError(state, "state.constraints is NOT empty, potential error!");
+}
+void SpecialFunctionHandler::handlePrintPatternValue(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+	llvm::errs() << "From klee_print_value: \narguments[0]=" << arguments[0] <<  "\narguments[1]=" << arguments[1] << "\narguments[2]=" << arguments[2] << "\narguments[3]=" << arguments[3] <<  "\n";
+	
+	StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "patternTime.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+	out << "Input model re-assign finish time: " << util::getWallTime() - dontCareStartTime << "s\n";
+}
+
+void SpecialFunctionHandler::handlePrintPatternAdressValue(ExecutionState &state,
+                                                KInstruction *target,
+                                                std::vector<ref<Expr> > &arguments) {
+	llvm::errs() << "From klee_print_value_adress: \narguments[0]=" << arguments[0] <<  "\narguments[1]=" << arguments[1] << "\narguments[2]=" << arguments[2] << "\narguments[3]=" << arguments[3] << "\n";
+	
+}
+
+/* Ruochen */
+
+
 
 /* arguments[0]: condition
    arguments[1]: key for true cases
@@ -2138,162 +2402,6 @@ void SpecialFunctionHandler::handleDontCareTransitionLocallyFourInput(
 
 }
 
-///////////////////////// For finding all transitions from a source state///////////////////
-//klee_find_all_transitions_from_given_src_globally(&S, depth, srcState, sinkState, protecState);
-//klee_find_all_transitions_from_given_src_globally(arg0, arg1,   arg2,    arg3,        arg4);
-void SpecialFunctionHandler::handleAllTransitionFromGivenSrcGlobally(
-                                    ExecutionState &state,
-                                    KInstruction *target,
-                                    std::vector<ref<Expr> > &arguments) {
-    llvm::errs() << "Calling function klee_find_all_transitions_from_given_src_globally(): arg[1]=" 
-                 << arguments[1] << "; arg[2]=" << arguments[2] << "; arg[3]=" << arguments[3] << "; arg[4]=" << arguments[4];   
-    
-    //a set of tuples, while in each tuple: (srcState, sinkState, depth, pathCondition)
-    llvm::errs() << " Time=" << (util::getWallTime() - dontCareStartTime) << "\n";
-    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, double>> stFindAllTransFromSrc;
-
-    // a set that contains all reachable states, for debug case
-    //std::set<ref<Expr> > ms;
-    
-        
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (findAllTransFromSrc == NULL) {
-       std::string fname = "allTransFromSrc.txt";
-       if (FindAllTransFromSrcFile != "")
-          fname = FindAllTransFromSrcFile; 
-       findAllTransFromSrc = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *findAllTransFromSrc;
-    
-    out << "Calling function klee_find_all_transitions_from_given_src_globally()\n";
-    
-    //if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
-       //ms = globalMetadataSetMap[arguments[0]];
-       
-    if(globalOutputTupleFindAllTransFromSrc.find(arguments[0]) !=  globalOutputTupleFindAllTransFromSrc.end())
-       stFindAllTransFromSrc = globalOutputTupleFindAllTransFromSrc[arguments[0]];
-
-    // create a fake state
-   	std::vector<ref<Expr>> vf;
-    const std::vector<ref<Expr>> &vrf = vf;
-   	ExecutionState *fake = new ExecutionState(vrf);
-      
-    //ConstantExpr *constarg1 = dyn_cast<ConstantExpr>(arguments[1]);
-    ConstantExpr *constarg2 = dyn_cast<ConstantExpr>(arguments[2]);
-    ConstantExpr *constarg3 = dyn_cast<ConstantExpr>(arguments[3]);
-    ConstantExpr *constarg4 = dyn_cast<ConstantExpr>(arguments[4]);
-    
-    ref<ConstantExpr> concreteConstArg2, concreteConstArg3;
-    
-    //check if arguments[2] (i.e. srcState) is concrete or symbolic
-    if (constarg2) 
-        concreteConstArg2 = constarg2;
-      
-    else {
-        executor.solver->getValue(*fake, arguments[2], concreteConstArg2);
-        //executor.solver->getValue(state, arguments[2], concreteConstArg2);
-        llvm::errs() << "\nConvert symbolic arg2 to concrete: " << concreteConstArg2;
-    }
-    
-    //ms.insert(concreteConstArg2);
-    
-    //check if arguments[3] (i.e. sinkState) is concrete or symbolic
-    if (constarg3)
-        concreteConstArg3 = constarg3;
-        
-    else {
-        executor.solver->getValue(*fake, arguments[3], concreteConstArg3);
-        //executor.solver->getValue(state, arguments[3], concreteConstArg3);
-        llvm::errs() << "\nConvert symbolic arg3 to concrete: " << concreteConstArg3 << "\n";
-    }
-    
-    //ms.insert(concreteConstArg3);
-
-
-    if ((concreteConstArg2->getZExtValue() == rstState) || (concreteConstArg3->getZExtValue() == rstState)) {
-        out << " Unreachable->rstState, terminate! Time=" 
-            << (util::getWallTime() - dontCareStartTime) << "s\n";
-        executor.terminateState(state);
-    }
-    
-    //acquire path condition
-    std::vector<ref<Expr>> pcConditiontemp = state.constraints.getConstraints();
-    ref<Expr> pcCondition = NULL;
-    std::vector< ref<Expr> >::const_iterator vi = pcConditiontemp.begin();
-    while (vi != pcConditiontemp.end()) {
-        if (pcCondition.isNull())
-            pcCondition = *vi;
-        else
-            pcCondition = AndExpr::create(*vi, pcCondition);
-        vi++;
-    }
-
-    llvm::errs() << "Collected path condition\n";
-
-    double pathTime = (util::getWallTime() - dontCareStartTime);
-    
-    //stFindAllTransFromSrc.insert(std::make_tuple(arguments[2], arguments[3], arguments[1], pcCondition, pathTime));
-    stFindAllTransFromSrc.insert(std::make_tuple(concreteConstArg2, concreteConstArg3, arguments[1], pcCondition, pathTime));
-    globalOutputTupleFindAllTransFromSrc[arguments[0]] = stFindAllTransFromSrc;
-    
-    //globalMetadataSetMap[arguments[0]] = ms;
-    //llvm::errs() << "reachable states: ";
-    //for(auto v : ms)        
-       //llvm::errs() << v << "; ";  
-    //llvm::errs() << "\n";
-      
-    bool terminateSuccess = false;    
-    // if given depth is reached OR destState == protectState, print all tuples in the set and terminate execution
-
-    //uint64_t arg1 = constarg1->getZExtValue();
-    //if (/*(arg1 = NUMSTEPS) ||*/ (concreteConstArg3->getZExtValue() == constarg4->getZExtValue())){
-        out  << "***********Finishing finding all transitions from a given srcState to protecState, results:\n ";
-        llvm::errs()  << "***********Finishing finding all transitions from a given srcState to protecState, results:\n ";
-        
-       
-        for(auto& tuple: stFindAllTransFromSrc){
-            std::string Str0;
-	          llvm::raw_string_ostream info0(Str0);
-            ExprPPrinter::printSingleExpr(info0, std::get<0>(tuple));
-            out  << "srcState: "<< info0.str(); 
-            llvm::errs()  << "srcState" << std::get<0>(tuple);
-
-            std::string Str1;
-	          llvm::raw_string_ostream info1(Str1);
-            ExprPPrinter::printSingleExpr(info1, std::get<1>(tuple));
-            out  << "; sinkState: "<< info1.str(); 
-            llvm::errs()  << "; sinkState: " << std::get<1>(tuple);
-
-            std::string Str2;
-	          llvm::raw_string_ostream info2(Str2);
-            ExprPPrinter::printSingleExpr(info2, std::get<2>(tuple));
-            out  << "; depth: "<< info2.str(); 
-            llvm::errs()  << "; depth: " << std::get<2>(tuple);
-            
-            //std::string Str4;
-	          //llvm::raw_string_ostream info4(Str4);
-            //ExprPPrinter::printSingleExpr(info3, std::get<3>(tuple));
-            double pathTimeTemp = std::get<4>(tuple);
-            out  << "; path time: " << pathTimeTemp << "s\n";
-            llvm::errs()  << "; path time: " << std::get<4>(tuple);
-
-            std::string Str3;
-            llvm::errs() << "; arg3 in tuple:" << std::get<3>(tuple) <<"\n";
-	          llvm::raw_string_ostream info3(Str3);
-            ExprPPrinter::printSingleExpr(info3, std::get<3>(tuple));
-            out  << "path constraint: "<< info3.str() << "\n";
-        }
-        out  << "***********\n";
-        terminateSuccess == true;
-      //}
-    
-    
-    if (terminateSuccess == true){
-        out  << "Terminating execution!!\n";
-        //executor.terminateState(state);
-    }
-}
 
 
 ///////////////////////// For finding all transitions from a unreachable source state///////////////////
@@ -2301,7 +2409,7 @@ void SpecialFunctionHandler::handleAllTransitionFromGivenUnreachableSrcOneStepGl
                                     ExecutionState &state,
                                     KInstruction *target,
                                     std::vector<ref<Expr> > &arguments) {
-    llvm::errs() << "Calling function klee_find_all_transitions_from_given_unreachable_src_one_step_globally(): arg[1]=" 
+/*    llvm::errs() << "Calling function klee_find_all_transitions_from_given_unreachable_src_one_step_globally(): arg[1]=" 
                  << arguments[1] << "; arg[2]=" << arguments[2] << "; arg[3]=" << arguments[3] << "; arg[4]=" << arguments[4];   
  
     StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
@@ -2484,976 +2592,9 @@ void SpecialFunctionHandler::handleAllTransitionFromGivenUnreachableSrcOneStepGl
     executor.solver->getValue(*fake, arguments[1], destValueDebug);
     out << "Which is state = : " << destValueDebug->getZExtValue() << "\n";
     return;
-    } 
+    }*/
 } 
-////////////////////////////////For 1 input variable FSM(From global metadata)//////////////////////////////////////////
-void SpecialFunctionHandler::handleDontCareTransitionGlobally(
-                                    ExecutionState &state,
-                                    KInstruction *target,
-                                    std::vector<ref<Expr> > &arguments) {
-    //llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
-                // << " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (dontcareStats == NULL) {
-       std::string fname = "dontcarestats.txt";
-       if (DontCareTransFile != "")
-          fname = DontCareTransFile; 
-       dontcareStats = new std::fstream(fname, std::fstream::out);
-    }
 
-    std::fstream & out = *dontcareStats;
-    //out << "calling function klee_check_dontcare_trans_global(): \n";
-    //out << " Finish forward analysis, total time=" 
-                //<< (util::getWallTime() - dontCareStartTime) << "\n";  
-    /////////start: hander reachable set from forward execution//////////////////       
-    std::set<ref<Expr> > rs;
-    if (globalMetadataSetMap.find(arguments[0]) != 
-                                  globalMetadataSetMap.end())
-       rs = globalMetadataSetMap[arguments[0]];
-    ref<Expr> reachable = NULL;
-    
-    /*out << " Explore all state space, Time=" 
-        << (util::getWallTime() - dontCareStartTime);*/
- 
-    for(auto v : rs) {
-        std::string Str2;
-  	    llvm::raw_string_ostream info2(Str2);
-        ExprPPrinter::printSingleExpr(info2, v);
-        out << "reachable set from rs: " << info2.str() << "\n";
-       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
-       if (reachable.isNull())
-          reachable = eqexp;
-       else {
-          ref<Expr> temp = reachable;
-          reachable = OrExpr::create(temp, eqexp);
-       }
-    }  
-    if (reachable.isNull())
-        return;
-
-    ref<Expr> notreachable = NotExpr::create(reachable); 
-    //llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
-    /////////end: hander reachable set from forward execution////////////////// 
-
-
-    /////////start: hander first input variable//////////////////
-    std::set<ref<Expr> > rsInput;
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end())
-       rsInput = globalInputSetMap[arguments[0]];
-    ref<Expr> reachableInput = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
-    for(auto v1 : rsInput) {
-       //llvm::errs() << " reachable first input name " << v1 << "\n";
-       ref<Expr> eqexpInput = EqExpr::create(arguments[4], v1);
-
-       if (reachableInput.isNull())
-          reachableInput = eqexpInput;
-       else
-          reachableInput = OrExpr::create(reachableInput, eqexpInput);
-    }
-    //llvm::errs() << "Width of reachableInput: " << reachableInput->getWidth() << "\n";
-    //llvm::errs() << "Value of reachableInput: " << reachableInput << "\n";
-    /////////end: hander first input variable//////////////////
-    bool terminateSuccessDest = false;
-    for(auto v1 : rs){
-	      bool sourceMatches;
-	      bool destMatches;
-        ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
-
-	      ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
-  	    ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
-	      ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
-	      //executor.solver->setTimeout(executor.coreSolverTimeout);
-     
-   	    std::vector<ref<Expr>> vf;
-        const std::vector<ref<Expr>> &vrDest = vf;
-	      ExecutionState *fakeDest = new ExecutionState(vrDest);
-        executor.solver->setTimeout(executor.coreSolverTimeout);
-      
-	      ref<ConstantExpr> sourceValue;
-  	    ref<ConstantExpr> destValue;
-	
-        bool destSuccess = executor.solver->mayBeTrue(state, Andv1eqexp, destMatches);
-
-	      if (destSuccess && destMatches){
-            executor.solver->setTimeout(executor.coreSolverTimeout);
-            ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
-           
-            //std::string Str1;
-            //llvm::raw_string_ostream info1(Str1);
-            //ExprPPrinter::printSingleExpr(info1, notreachableANDinputs);
-            //out << "notreachableANDinputs: " << info1.str() << "\n";
-              
-            bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
-            if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
-                terminateSuccessDest = true;
-                out << " Found a don't care transition, Time=" 
-                    << (util::getWallTime() - dontCareStartTime) << "\n";  	
-                //llvm::errs() << " Found a don't care transition, " << " source: \n";
-                //ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
-                //llvm::errs() << "destination " << Andv1eqexp << "\n";
-                ExecutionState *fakeSource = new ExecutionState(state);
-                fakeSource->addConstraint(notreachableANDinputs);
-             
-                //std::string Str;
-                //llvm::raw_string_ostream info(Str);
-                //ExprPPrinter::printConstraints(info, fakeSource->constraints);
-                //out << "fakeSource: " << info.str() << "\n";
-              
-            /////////////////////////new added begin, try to find all possible source///////////////////////////
-                std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
-                ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
-                ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
-                //llvm::errs() << "Return range of source in getRange: [" 
-                             //<< consfirst->getZExtValue() << "," 
-                             //<< conssecond->getZExtValue() << "]\n";
-            /////////////////////////new added end, try to find all possible source///////////////////////////
-                out << "Range of source state in : [" 
-                    << consfirst->getZExtValue() << "," 
-                    << conssecond->getZExtValue() << "]\n";
-                //executor.solver->getValue(*fakeSource, arguments[2], sourceValue);
-                //llvm::errs() << "Return value of sourceValue in getValue: " << sourceValue->getZExtValue() << "\n";
-
-                fakeDest->addConstraint(Andv1eqexp);
-                executor.solver->getValue(*fakeDest, arguments[3], destValue);
-                //llvm::errs() << "Return value of destValue in getValue: " 
-                             //<< destValue->getZExtValue() << "\n";
-                out << "Destination state: " 
-                    << destValue->getZExtValue() << "\n";
-            }        
-            else
-                continue;
-        	
-	      }
-        else
-            continue;
-  }
-	/*std::vector<ref<Expr>> vf;
-  const std::vector<ref<Expr>> &vrDest = vf;
-	ExecutionState *fake = new ExecutionState(vrDest);    
-  ref<ConstantExpr> destValueDebug;*/
-    
-  if ((terminateSuccessDest == false) && (TerminateNoDCTState==true)){
-    executor.terminateState(state);
-    //out << " Terminate state that don't have incoming DCT successfully! ";
-    
-    //executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    //out << "Which is state = : " << destValueDebug->getZExtValue() << "\n";
-    return;
-    }
-  /*else{
-    executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    out << "******************************\n";
-    out << "State " << destValueDebug->getZExtValue() << " has an incoming DCT\n";
-    out << "******************************\n";
-  }*/
-  dontCareFinishTime = util::getWallTime();
-  //llvm::errs() << "\nFinish abstract analysis, total time (dontCareFinishTime): " << (dontCareFinishTime- dontCareStartTime) << "\n";
-  out << "\nFinish abstract analysis, total time (dontCareFinishTime): " << (dontCareFinishTime- dontCareStartTime) << "\n";
-}
-
-////////////////////////////////For 2 input variables FSM//////////////////////////////////////////
-void SpecialFunctionHandler::handleDontCareTransitionGloballyTwoInput(
-                                    ExecutionState &state,
-                                    KInstruction *target,
-                                    std::vector<ref<Expr> > &arguments) {
-    llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
-                 << " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (dontcareStats == NULL) {
-       std::string fname = "dontcarestats.txt";
-       if (DontCareTransFile != "")
-          fname = DontCareTransFile; 
-       dontcareStats = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *dontcareStats;
-
-    /////////start: hander reachable set from forward execution////////////////// 
-    std::set<ref<Expr> > rs, rsConcrete;
-    if (globalMetadataSetMap.find(arguments[0]) != 
-                                  globalMetadataSetMap.end())
-       rs = globalMetadataSetMap[arguments[0]];
-       
-    ref<Expr> reachable = NULL;
-
-    for(auto v : rs) {
-       llvm::errs() << "reachable set from rs: " << v << "\n";
-        
-       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
-       if (reachable.isNull())
-          reachable = eqexp;
-       else {
-          ref<Expr> temp = reachable;
-          reachable = OrExpr::create(temp, eqexp);
-       }
-    }  
-    if (reachable.isNull()) {
-         llvm::errs() << "Empty reachable!, return!!\n";
-         return;
-    }
-
-    //ref<Expr> notreachable = NotExpr::create(dyn_cast<ConstantExpr>(reachable)); 
-    ref<Expr> notreachable = NotExpr::create(reachable); 
-    llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
-    /////////end: hander reachable set from forward execution////////////////// 
-
-
-    //////////////start: hander first input variable///////////////////////////
-    	////////handle first input variable:
-    std::set<ref<Expr> > rsInputFirst;
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end())
-       rsInputFirst = globalInputSetMap[arguments[0]];
-    ref<Expr> reachableInputFirst = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
-    for(auto v1 : rsInputFirst) {
-       llvm::errs() << " reachable first input name " << v1 << "\n";
-       ref<Expr> eqexpInputFirst = EqExpr::create(arguments[4], v1);
-
-       if (reachableInputFirst.isNull())
-          reachableInputFirst = eqexpInputFirst;
-       else
-          reachableInputFirst = OrExpr::create(reachableInputFirst, eqexpInputFirst);
-    }
-   	////////handle second input variable:
-    std::set<ref<Expr> > rsInputSecond;
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end())
-       rsInputSecond = globalTwoInputSetMap[arguments[0]];
-    ref<Expr> reachableInputSecond = NULL;
-    for(auto v1 : rsInputSecond) {
-       llvm::errs() << " reachable Second input name " << v1 << "\n";
-       ref<Expr> eqexpInputSecond = EqExpr::create(arguments[5], v1);
-
-       if (reachableInputSecond.isNull())
-          reachableInputSecond = eqexpInputSecond;
-       else
-          reachableInputSecond = OrExpr::create(reachableInputSecond, eqexpInputSecond);
-    }
-   	////////And two input variables:
-    ref<Expr> reachableInput = AndExpr::create(reachableInputFirst, reachableInputSecond);
-
-    llvm::errs() << "Width of reachableInput: " << reachableInput->getWidth() << "\n";
-    llvm::errs() << "Value of reachableInput: " << reachableInput << "\n";
-    /////////end: hander first input variable//////////////////
-
-    bool terminateSuccessDest = false;
-    
-    for(auto v1 : rs){
-	bool sourceMatches;
-	bool destMatches;
-        ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
-
-	ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
-	ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
-	ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
-	executor.solver->setTimeout(executor.coreSolverTimeout);
-   	std::vector<ref<Expr>> vf;
-    	const std::vector<ref<Expr>> &vrDest = vf;
-	ExecutionState *fakeDest = new ExecutionState(vrDest);
-
-	ref<ConstantExpr> sourceValue;
-	ref<ConstantExpr> destValue;
-	
-	bool destSuccess = executor.solver->mayBeTrue(*fakeDest, Andv1eqexp, destMatches);
-
-	if (destSuccess && destMatches){
-           executor.solver->setTimeout(executor.coreSolverTimeout);
-           ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
-              std::string Str1;
-  	          llvm::raw_string_ostream info1(Str1);
-              ExprPPrinter::printSingleExpr(info1, notreachableANDinputs);
-              out << "notreachableANDinputs: " << info1.str() << "\n";
-           bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
-	   if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {       
-       terminateSuccessDest = true;
-       
-              out << " Found a don't care transition, Time=" 
-                  << (util::getWallTime() - dontCareStartTime) << "\n";  	
-	      llvm::errs() << " Found a don't care transition, " << " source: \n";
-	      ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
-	      llvm::errs() << "destination " << Andv1eqexp << "\n";
-	      ExecutionState *fakeSource = new ExecutionState(state);
-	      fakeSource->addConstraint(notreachableANDinputs);
-              std::string Str;
-  	          llvm::raw_string_ostream info(Str);
-              ExprPPrinter::printConstraints(info, fakeSource->constraints);
-              out << "fakeSource: " << info.str() << "\n";
-	      /////////////////////////new added begin, try to find all possible source///////////////////////////
-	      std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
-	      ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
-	      ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
-	      llvm::errs() << "Return range of source in getRange: [" 
-                           << consfirst->getZExtValue() << "," 
-                           << conssecond->getZExtValue() << "]\n";
-	      /////////////////////////new added end, try to find all possible source///////////////////////////
-              out << "Range of source state in : [" 
-                  << consfirst->getZExtValue() << "," 
-                  << conssecond->getZExtValue() << "]\n";
-	      //executor.solver->getValue(*fakeSource, arguments[2], sourceValue);
-	      //llvm::errs() << "Return value of sourceValue in getValue: " << sourceValue->getZExtValue() << "\n";
-
-	      fakeDest->addConstraint(Andv1eqexp);
-	      executor.solver->getValue(*fakeDest, arguments[3], destValue);
-	      llvm::errs() << "Return value of destValue in getValue: " 
-                           << destValue->getZExtValue() << "\n";
-              out << "Destination state: " 
-                  << destValue->getZExtValue() << "\n";
-	   }	
-	}
-    }
-	std::vector<ref<Expr>> vf;
-  const std::vector<ref<Expr>> &vrDest = vf;
-	ExecutionState *fake = new ExecutionState(vrDest);    
-  ref<ConstantExpr> destValueDebug;
-    
-  if ((terminateSuccessDest == false) && (TerminateNoDCTState==true)){
-    executor.terminateState(state);
-    out << " Terminate state that don't have incoming DCT successfully! ";
-    
-    executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    out << "Which is state = : " << destValueDebug->getZExtValue() << "\n";
-    return;
-    }
-  else{
-    executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    out << "******************************\n";
-    out << "State " << destValueDebug->getZExtValue() << " has an incoming DCT\n";
-    out << "******************************\n";
-  }
-  dontCareFinishTime = util::getWallTime();
-  //llvm::errs() << "\nFinish abstract analysis, total time (dontCareFinishTime): " << (dontCareFinishTime- dontCareStartTime) << "\n";
-  out << "\nFinish abstract analysis, total time (dontCareFinishTime): " << (dontCareFinishTime- dontCareStartTime) << "\n";
-}
-
-////////////////////////////////For 3 input variables FSM//////////////////////////////////////////
-void SpecialFunctionHandler::handleDontCareTransitionGloballyThreeInput(
-                                    ExecutionState &state,
-                                    KInstruction *target,
-                                    std::vector<ref<Expr> > &arguments) {
-    //llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
-                 //<< " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (dontcareStats == NULL) {
-       std::string fname = "dontcarestats.txt";
-       if (DontCareTransFile != "")
-          fname = DontCareTransFile; 
-       dontcareStats = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *dontcareStats;
-
-    /////////start: hander reachable set from forward execution//////////////////       
-    std::set<ref<Expr> > rs, rsConcrete;
-    if (globalMetadataSetMap.find(arguments[0]) != 
-                                  globalMetadataSetMap.end())
-       rs = globalMetadataSetMap[arguments[0]];
-    ref<Expr> reachable = NULL;
-
-    for(auto v : rs) {
-	      //std::string Str3;
-	      //llvm::raw_string_ostream info3(Str3);
-      	//ExprPPrinter::printSingleExpr(info3, v);
-      	//out << "reachable state: " << info3.str() << "\n";
-       
-       //llvm::errs() << " reachable value " << v << "\n";
-       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
-       if (reachable.isNull())
-          reachable = eqexp;
-       else {
-          ref<Expr> temp = reachable;
-          reachable = OrExpr::create(temp, eqexp);
-       }
-    }  
-    if (reachable.isNull())
-       return; 
-
-    ref<Expr> notreachable = NotExpr::create(reachable); 
-    //llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
-    /////////end: hander reachable set from forward execution////////////////// 
-
-
-    //////////////start: hander first input variable///////////////////////////
-    	////////handle first input variable:
-    std::set<ref<Expr> > rsInputFirst;
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end())
-       rsInputFirst = globalInputSetMap[arguments[0]];
-    ref<Expr> reachableInputFirst = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
-    for(auto v1 : rsInputFirst) {
-       //llvm::errs() << " reachable first input name " << v1 << "\n";
-       ref<Expr> eqexpInputFirst = EqExpr::create(arguments[4], v1);
-
-       if (reachableInputFirst.isNull())
-          reachableInputFirst = eqexpInputFirst;
-       else
-          reachableInputFirst = OrExpr::create(reachableInputFirst, eqexpInputFirst);
-    }
-   	////////handle second input variable:
-    std::set<ref<Expr> > rsInputSecond;
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end())
-       rsInputSecond = globalTwoInputSetMap[arguments[0]];
-    ref<Expr> reachableInputSecond = NULL;
-    for(auto v1 : rsInputSecond) {
-       //llvm::errs() << " reachable Second input name " << v1 << "\n";
-       ref<Expr> eqexpInputSecond = EqExpr::create(arguments[5], v1);
-
-       if (reachableInputSecond.isNull())
-          reachableInputSecond = eqexpInputSecond;
-       else
-          reachableInputSecond = OrExpr::create(reachableInputSecond, eqexpInputSecond);
-    }
-   	////////handle third input variable:
-    std::set<ref<Expr> > rsInputThird;
-    if (globalThreeInputSetMap.find(arguments[0]) != globalThreeInputSetMap.end())
-       rsInputThird = globalThreeInputSetMap[arguments[0]];
-
-    ref<Expr> reachableInputThird = NULL;
-    for(auto v1 : rsInputThird) {
-       //llvm::errs() << " reachable Third input name " << v1 << "\n";
-       ref<Expr> eqexpInputThird = EqExpr::create(arguments[6], v1);
-
-       if (reachableInputThird.isNull())
-          reachableInputThird = eqexpInputThird;
-       else
-          reachableInputThird = OrExpr::create(reachableInputThird, eqexpInputThird);
-    }
-   	
-    
-
-    ref<Expr> reachableInputFirstSecond = AndExpr::create(reachableInputFirst, reachableInputSecond);//And first with second input variables	
- 
-    ref<Expr> reachableInput = AndExpr::create(reachableInputFirstSecond, reachableInputThird);//And FirstSecond with Third input variables
-
-    //llvm::errs() << "Width of reachableInput: " << reachableInput->getWidth() << "\n";
-    //llvm::errs() << "Value of reachableInput: " << reachableInput << "\n";
-    /////////end: hander first input variable//////////////////
-    bool terminateSuccessDest = false;
-    for(auto v1 : rs){
-	    bool sourceMatches;
-	    bool destMatches;
-	    ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
-
-	    ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
-	    ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
-	    ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
-         
-	    std::vector<ref<Expr>> vf;
-    	const std::vector<ref<Expr>> &vrDest = vf;
-	    ExecutionState *fakeDest = new ExecutionState(vrDest);
-	    executor.solver->setTimeout(executor.coreSolverTimeout);
-      
-      ref<ConstantExpr> sourceValue;
-	    ref<ConstantExpr> destValue;
-	
-	    bool destSuccess = executor.solver->mayBeTrue(*fakeDest, Andv1eqexp, destMatches);
-
-	    if (destSuccess && destMatches){
-          executor.solver->setTimeout(executor.coreSolverTimeout);
-          ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
-           
-          //std::string Str1;
-			    //llvm::raw_string_ostream info1(Str1);
-          //ExprPPrinter::printSingleExpr(info1, notreachableANDinputs);
-          //out << "notreachableANDinputs: " << info1.str() << "\n";
-              
-          bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
-          if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
-              terminateSuccessDest = true;
-              out << " Found a don't care transition, Time=" 
-                  << (util::getWallTime() - dontCareStartTime) << "\n";  	
-              //llvm::errs() << " Found a don't care transition, " << " source: \n";
-              //ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
-              //llvm::errs() << "destination " << Andv1eqexp << "\n";
-              ExecutionState *fakeSource = new ExecutionState(state);              
-              fakeSource->addConstraint(notreachableANDinputs);
-       
-              //std::string Str;
-              //llvm::raw_string_ostream info(Str);
-              //ExprPPrinter::printConstraints(info, fakeSource->constraints);
-              //out << "fakeSource: " << info.str() << "\n";
-        
-              /////////////////////////new added begin, try to find all possible source///////////////////////////
-              std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
-              ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
-              ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
-              //llvm::errs() << "Return range of source in getRange: [" 
-                           //<< consfirst->getZExtValue() << "," 
-                           //<< conssecond->getZExtValue() << "]\n";
-              /////////////////////////new added end, try to find all possible source///////////////////////////
-              out << "Range of source state in : [" 
-                  << consfirst->getZExtValue() << "," 
-                  << conssecond->getZExtValue() << "]\n";
-
-              fakeDest->addConstraint(Andv1eqexp);
-              executor.solver->getValue(*fakeDest, arguments[1], destValue);
-              //llvm::errs() << "Return value of destValue in getValue: " 
-                          // << destValue->getZExtValue() << "\n";
-              out << "Destination state: " 
-                  << destValue->getZExtValue() << "\n";
-          }
-          
-          else
-              continue;	
-	    }
-         
-      else
-          continue;
-         
-  }
-
-	//std::vector<ref<Expr>> vf;
-  //const std::vector<ref<Expr>> &vrDest = vf;
-	//ExecutionState *fake = new ExecutionState(vrDest);    
-  //ref<ConstantExpr> destValueDebug;
-    
-  if ((terminateSuccessDest == false) && (TerminateNoDCTState==true)){
-    executor.terminateState(state);
-    //out << " Terminate state that don't have incoming DCT successfully! ";
-    //executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    //out << "Which is state = : " << destValueDebug->getZExtValue() << "\n";
-    return;
-    }
-  //else{
-    //executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    //out << "******************************\n";
-    //out << "State " << destValueDebug->getZExtValue() << " has an incoming DCT\n";
-    //out << "******************************\n";
-  //}
-
-  dontCareFinishTime = util::getWallTime();
-  llvm::errs() << "\nFinish abstract analysis, total time (dontCareFinishTime): " << (dontCareFinishTime- dontCareStartTime) << "\n";
-  out << "\nFinish abstract analysis, total time (dontCareFinishTime): " << (dontCareFinishTime- dontCareStartTime) << "\n";
-  
-}
-
-////////////////////////////////For 4 input variables FSM//////////////////////////////////////////
-void SpecialFunctionHandler::handleDontCareTransitionGloballyFourInput(
-                                    ExecutionState &state,
-                                    KInstruction *target,
-                                    std::vector<ref<Expr> > &arguments) {
-    llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
-                 << " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (dontcareStats == NULL) {
-       std::string fname = "dontcarestats.txt";
-       if (DontCareTransFile != "")
-          fname = DontCareTransFile; 
-       dontcareStats = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *dontcareStats;
-
-    /////////start: hander reachable set from forward execution//////////////////       
-    std::set<ref<Expr> > rs, rsConcrete;
-    if (globalMetadataSetMap.find(arguments[0]) != 
-                                  globalMetadataSetMap.end())
-       rs = globalMetadataSetMap[arguments[0]];
-    ref<Expr> reachable = NULL;
-
-	////Begin: Convert symbolic rs to concrete rs////
-    /*for(auto v: rs){
-       std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(state, v);
-       ref<Expr> rsSymbolicFirst = rsSymbolic.first;
-       auto rsSymbolicFirstConstant = dyn_cast<ConstantExpr>(rsSymbolicFirst);
-       uint64_t rsSymbolicFirstUint = rsSymbolicFirstConstant->getZExtValue();
-       ref<Expr> rsSymbolicSecond = rsSymbolic.second;
-       auto rsSymbolicSecondConstant = dyn_cast<ConstantExpr>(rsSymbolicSecond);
-       uint64_t rsSymbolicSecondUint = rsSymbolicSecondConstant->getZExtValue();
-       for(auto v1 = rsSymbolicFirstUint; v1 <= rsSymbolicSecondUint; v1++){
-		auto v2 = v1;
-		rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
-       }
-	
-    }*/
-	////End: Convert symbolic rs to concrete rs////
-
-    for(auto v : rs) {
-       //llvm::errs() << " reachable value " << v << "\n";
-       std::string Str2;
-  	    llvm::raw_string_ostream info2(Str2);
-        ExprPPrinter::printSingleExpr(info2, v);
-        out << "reachable set from rs: " << info2.str() << "\n";
-        
-       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
-       if (reachable.isNull())
-          reachable = eqexp;
-       else {
-          ref<Expr> temp = reachable;
-          reachable = OrExpr::create(temp, eqexp);
-       }
-    }  
-    if (!reachable.isNull())
-       llvm::errs() << "reachable set: " << reachable << "\n"; 
-
-    ref<Expr> notreachable = NotExpr::create(reachable); 
-    llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
-    /////////end: hander reachable set from forward execution////////////////// 
-
-
-    //////////////start: hander first input variable///////////////////////////
-    	////////handle first input variable:
-    std::set<ref<Expr> > rsInputFirst;
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end())
-       rsInputFirst = globalInputSetMap[arguments[0]];
-    ref<Expr> reachableInputFirst = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
-    for(auto v1 : rsInputFirst) {
-       llvm::errs() << " reachable first input name " << v1 << "\n";
-       ref<Expr> eqexpInputFirst = EqExpr::create(arguments[4], v1);
-
-       if (reachableInputFirst.isNull())
-          reachableInputFirst = eqexpInputFirst;
-       else
-          reachableInputFirst = OrExpr::create(reachableInputFirst, eqexpInputFirst);
-    }
-   	////////handle second input variable:
-    std::set<ref<Expr> > rsInputSecond;
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end())
-       rsInputSecond = globalTwoInputSetMap[arguments[0]];
-    ref<Expr> reachableInputSecond = NULL;
-    for(auto v1 : rsInputSecond) {
-       llvm::errs() << " reachable Second input name " << v1 << "\n";
-       ref<Expr> eqexpInputSecond = EqExpr::create(arguments[5], v1);
-
-       if (reachableInputSecond.isNull())
-          reachableInputSecond = eqexpInputSecond;
-       else
-          reachableInputSecond = OrExpr::create(reachableInputSecond, eqexpInputSecond);
-    }
-   	////////handle third input variable:
-    std::set<ref<Expr> > rsInputThird;
-    if (globalThreeInputSetMap.find(arguments[0]) != globalThreeInputSetMap.end())
-       rsInputThird = globalThreeInputSetMap[arguments[0]];
-
-    ref<Expr> reachableInputThird = NULL;
-    for(auto v1 : rsInputThird) {
-       llvm::errs() << " reachable Third input name " << v1 << "\n";
-       ref<Expr> eqexpInputThird = EqExpr::create(arguments[6], v1);
-
-       if (reachableInputThird.isNull())
-          reachableInputThird = eqexpInputThird;
-       else
-          reachableInputThird = OrExpr::create(reachableInputThird, eqexpInputThird);
-    }
-   	////////handle fourth input variable:
-    std::set<ref<Expr> > rsInputFourth;
-    if (globalFourInputSetMap.find(arguments[0]) != globalFourInputSetMap.end())
-       rsInputFourth = globalFourInputSetMap[arguments[0]];
-
-    ref<Expr> reachableInputFourth = NULL;
-    for(auto v1 : rsInputFourth) {
-       llvm::errs() << " reachable Fourth input name " << v1 << "\n";
-       ref<Expr> eqexpInputFourth = EqExpr::create(arguments[7], v1);
-
-       if (reachableInputFourth.isNull())
-          reachableInputFourth = eqexpInputFourth;
-       else
-          reachableInputFourth = OrExpr::create(reachableInputFourth, eqexpInputFourth);
-    }
-
-    ref<Expr> reachableInputFirstSecond = AndExpr::create(reachableInputFirst, reachableInputSecond);//And first with second input variables	
-    ref<Expr> reachableInputThirdFourth = AndExpr::create(reachableInputFourth, reachableInputThird);//And third with fourth input variables
- 
-    ref<Expr> reachableInput = AndExpr::create(reachableInputFirstSecond, reachableInputThirdFourth);//And FirstSecond with ThirdFourth
-
-    llvm::errs() << "Width of reachableInput: " << reachableInput->getWidth() << "\n";
-    llvm::errs() << "Value of reachableInput: " << reachableInput << "\n";
-    /////////end: hander first input variable//////////////////
-    bool terminateSuccessDest = false;
-    for(auto v1 : rs){
-	    bool sourceMatches;
-	    bool destMatches;
-      ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
-
-	    ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
-	    ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
-	    ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
-	    executor.solver->setTimeout(executor.coreSolverTimeout);
-      std::vector<ref<Expr>> vf;
-    	const std::vector<ref<Expr>> &vrDest = vf;
-	    ExecutionState *fakeDest = new ExecutionState(vrDest);
-
-	ref<ConstantExpr> sourceValue;
-	ref<ConstantExpr> destValue;
-	
-	bool destSuccess = executor.solver->mayBeTrue(*fakeDest, Andv1eqexp, destMatches);
-
-	if (destSuccess && destMatches){
-           executor.solver->setTimeout(executor.coreSolverTimeout);
-           ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
-           
-           std::string Str1;
-			     llvm::raw_string_ostream info1(Str1);
-           ExprPPrinter::printSingleExpr(info1, notreachableANDinputs);
-           out << "notreachableANDinputs: " << info1.str() << "\n";
-              
-           bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
-	   if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
-        terminateSuccessDest = true;
-              out << " Found a don't care transition, Time=" 
-                  << (util::getWallTime() - dontCareStartTime) << "\n";  	
-	      llvm::errs() << " Found a don't care transition, " << " source: \n";
-	      ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
-	      llvm::errs() << "destination " << Andv1eqexp << "\n";
-	      ExecutionState *fakeSource = new ExecutionState(state);
-	      fakeSource->addConstraint(notreachableANDinputs);
-       
-        std::string Str;
-  	    llvm::raw_string_ostream info(Str);
-        ExprPPrinter::printConstraints(info, fakeSource->constraints);
-        out << "fakeSource: " << info.str() << "\n";
-              
-	      /////////////////////////new added begin, try to find all possible source///////////////////////////
-	      std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
-	      ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
-	      ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
-	      llvm::errs() << "Return range of source in getRange: [" 
-                           << consfirst->getZExtValue() << "," 
-                           << conssecond->getZExtValue() << "]\n";
-	      /////////////////////////new added end, try to find all possible source///////////////////////////
-              out << "Range of source state in : [" 
-                  << consfirst->getZExtValue() << "," 
-                  << conssecond->getZExtValue() << "]\n";
-	      //executor.solver->getValue(*fakeSource, arguments[2], sourceValue);
-	      //llvm::errs() << "Return value of sourceValue in getValue: " << sourceValue->getZExtValue() << "\n";
-
-	      fakeDest->addConstraint(Andv1eqexp);
-	      executor.solver->getValue(*fakeDest, arguments[3], destValue);
-	      llvm::errs() << "Return value of destValue in getValue: " 
-                           << destValue->getZExtValue() << "\n";
-              out << "Destination state: " 
-                  << destValue->getZExtValue() << "\n";
-	   }	
-	  }
-   }
-  if (terminateSuccessDest == false){
-    executor.terminateState(state);
-    out << " Terminate state that don't have incoming DCT successfully! ";
-    
-    ref<ConstantExpr> destValueDebug;
-   
-    ExecutionState *fake = new ExecutionState(state);
-    executor.solver->setTimeout(executor.coreSolverTimeout);
-    //fake->addConstraint(Andv1eqexp);
-    executor.solver->getValue(*fake, arguments[1], destValueDebug);
-    out << "Which is state = : " << destValueDebug->getZExtValue() << "\n";
-    return;
-    }
-}
-
-
-////////////////////////////////For 5 input variables FSM//////////////////////////////////////////
-void SpecialFunctionHandler::handleDontCareTransitionGloballyFiveInput(
-                                    ExecutionState &state,
-                                    KInstruction *target,
-                                    std::vector<ref<Expr> > &arguments) {
-    llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
-                 << " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (dontcareStats == NULL) {
-       std::string fname = "dontcarestats.txt";
-       if (DontCareTransFile != "")
-          fname = DontCareTransFile; 
-       dontcareStats = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *dontcareStats;
-
-    /////////start: hander reachable set from forward execution//////////////////       
-    std::set<ref<Expr> > rs, rsConcrete;
-    if (globalMetadataSetMap.find(arguments[0]) != 
-                                  globalMetadataSetMap.end())
-       rs = globalMetadataSetMap[arguments[0]];
-    ref<Expr> reachable = NULL;
-
-	////Begin: Convert symbolic rs to concrete rs////
-    /*for(auto v: rs){
-       std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(state, v);
-       ref<Expr> rsSymbolicFirst = rsSymbolic.first;
-       auto rsSymbolicFirstConstant = dyn_cast<ConstantExpr>(rsSymbolicFirst);
-       uint64_t rsSymbolicFirstUint = rsSymbolicFirstConstant->getZExtValue();
-       ref<Expr> rsSymbolicSecond = rsSymbolic.second;
-       auto rsSymbolicSecondConstant = dyn_cast<ConstantExpr>(rsSymbolicSecond);
-       uint64_t rsSymbolicSecondUint = rsSymbolicSecondConstant->getZExtValue();
-       for(auto v1 = rsSymbolicFirstUint; v1 <= rsSymbolicSecondUint; v1++){
-		auto v2 = v1;
-		rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
-       }
-	
-    }*/
-	////End: Convert symbolic rs to concrete rs////
-
-    for(auto v : rs) {
-       //llvm::errs() << " reachable value " << v << "\n";
-        std::string Str2;
-  	llvm::raw_string_ostream info2(Str2);
-        ExprPPrinter::printSingleExpr(info2, v);
-        out << "reachable set from rs: " << info2.str() << "\n";
-        
-       ref<Expr> eqexp = EqExpr::create(arguments[2], v);
-       if (reachable.isNull())
-          reachable = eqexp;
-       else {
-          ref<Expr> temp = reachable;
-          reachable = OrExpr::create(temp, eqexp);
-       }
-    }  
-    if (!reachable.isNull())
-       llvm::errs() << "reachable set: " << reachable << "\n"; 
-
-    ref<Expr> notreachable = NotExpr::create(reachable); 
-    llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
-    /////////end: hander reachable set from forward execution////////////////// 
-
-
-    //////////////start: hander first input variable///////////////////////////
-    	////////handle first input variable:
-    std::set<ref<Expr> > rsInputFirst;
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end())
-       rsInputFirst = globalInputSetMap[arguments[0]];
-    ref<Expr> reachableInputFirst = NULL;//this var represents OR( EQ(inSec, inFirst_i) )
-    for(auto v1 : rsInputFirst) {
-       llvm::errs() << " reachable first input name " << v1 << "\n";
-       ref<Expr> eqexpInputFirst = EqExpr::create(arguments[4], v1);
-
-       if (reachableInputFirst.isNull())
-          reachableInputFirst = eqexpInputFirst;
-       else
-          reachableInputFirst = OrExpr::create(reachableInputFirst, eqexpInputFirst);
-    }
-   	////////handle second input variable:
-    std::set<ref<Expr> > rsInputSecond;
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end())
-       rsInputSecond = globalTwoInputSetMap[arguments[0]];
-    ref<Expr> reachableInputSecond = NULL;
-    for(auto v1 : rsInputSecond) {
-       llvm::errs() << " reachable Second input name " << v1 << "\n";
-       ref<Expr> eqexpInputSecond = EqExpr::create(arguments[5], v1);
-
-       if (reachableInputSecond.isNull())
-          reachableInputSecond = eqexpInputSecond;
-       else
-          reachableInputSecond = OrExpr::create(reachableInputSecond, eqexpInputSecond);
-    }
-   	////////handle third input variable:
-    std::set<ref<Expr> > rsInputThird;
-    if (globalThreeInputSetMap.find(arguments[0]) != globalThreeInputSetMap.end())
-       rsInputThird = globalThreeInputSetMap[arguments[0]];
-
-    ref<Expr> reachableInputThird = NULL;
-    for(auto v1 : rsInputThird) {
-       llvm::errs() << " reachable Third input name " << v1 << "\n";
-       ref<Expr> eqexpInputThird = EqExpr::create(arguments[6], v1);
-
-       if (reachableInputThird.isNull())
-          reachableInputThird = eqexpInputThird;
-       else
-          reachableInputThird = OrExpr::create(reachableInputThird, eqexpInputThird);
-    }
-   	////////handle fourth input variable:
-    std::set<ref<Expr> > rsInputFourth;
-    if (globalFourInputSetMap.find(arguments[0]) != globalFourInputSetMap.end())
-       rsInputFourth = globalFourInputSetMap[arguments[0]];
-
-    ref<Expr> reachableInputFourth = NULL;
-    for(auto v1 : rsInputFourth) {
-       llvm::errs() << " reachable Fourth input name " << v1 << "\n";
-       ref<Expr> eqexpInputFourth = EqExpr::create(arguments[7], v1);
-
-       if (reachableInputFourth.isNull())
-          reachableInputFourth = eqexpInputFourth;
-       else
-          reachableInputFourth = OrExpr::create(reachableInputFourth, eqexpInputFourth);
-    }
-
-   	////////handle fifth input variable:
-    std::set<ref<Expr> > rsInputFifth;
-    if (globalFiveInputSetMap.find(arguments[0]) != globalFiveInputSetMap.end())
-       rsInputFifth = globalFiveInputSetMap[arguments[0]];
-
-    ref<Expr> reachableInputFifth = NULL;
-    for(auto v1 : rsInputFifth) {
-       llvm::errs() << " reachable Fourth input name " << v1 << "\n";
-       ref<Expr> eqexpInputFourth = EqExpr::create(arguments[8], v1);
-
-       if (reachableInputFifth.isNull())
-          reachableInputFifth = eqexpInputFourth;
-       else
-          reachableInputFifth = OrExpr::create(reachableInputFifth, eqexpInputFourth);
-    }
-
-    ref<Expr> reachableInputFirstSecond = AndExpr::create(reachableInputFirst, reachableInputSecond);//And first with second input variables	
-    ref<Expr> reachableInputThirdFourth = AndExpr::create(reachableInputFourth, reachableInputThird);//And third with fourth input variables
- 
-    ref<Expr> reachableInputOneToFour = AndExpr::create(reachableInputFirstSecond, reachableInputThirdFourth);//And FirstSecond with ThirdFourth
-    ref<Expr> reachableInput = AndExpr::create(reachableInputOneToFour, reachableInputFifth);//And all expr
-
-    llvm::errs() << "Width of reachableInput: " << reachableInput->getWidth() << "\n";
-    llvm::errs() << "Value of reachableInput: " << reachableInput << "\n";
-    /////////end: hander first input variable//////////////////
-
-    for(auto v1 : rs){
-	bool sourceMatches;
-	bool destMatches;
-        ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
-
-	ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
-	ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
-	ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
-	executor.solver->setTimeout(executor.coreSolverTimeout);
-   	std::vector<ref<Expr>> vf;
-    	const std::vector<ref<Expr>> &vrDest = vf;
-	ExecutionState *fakeDest = new ExecutionState(vrDest);
-
-	ref<ConstantExpr> sourceValue;
-	ref<ConstantExpr> destValue;
-	
-	bool destSuccess = executor.solver->mayBeTrue(*fakeDest, Andv1eqexp, destMatches);
-
-	if (destSuccess && destMatches){
-           executor.solver->setTimeout(executor.coreSolverTimeout);
-           ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
-           
-           std::string Str1;
-	   llvm::raw_string_ostream info1(Str1);
-           ExprPPrinter::printSingleExpr(info1, notreachableANDinputs);
-           out << "notreachableANDinputs: " << info1.str() << "\n";
-              
-           bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
-	   if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
-              out << " Found a don't care transition, Time=" 
-                  << (util::getWallTime() - dontCareStartTime) << "\n";  	
-	      llvm::errs() << " Found a don't care transition, " << " source: \n";
-	      ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
-	      llvm::errs() << "destination " << Andv1eqexp << "\n";
-	      ExecutionState *fakeSource = new ExecutionState(state);
-	      fakeSource->addConstraint(notreachableANDinputs);
-       
-        std::string Str;
-  	    llvm::raw_string_ostream info(Str);
-        ExprPPrinter::printConstraints(info, fakeSource->constraints);
-        out << "fakeSource: " << info.str() << "\n";
-              
-	      /////////////////////////new added begin, try to find all possible source///////////////////////////
-	      std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
-	      ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
-	      ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
-	      llvm::errs() << "Return range of source in getRange: [" 
-                           << consfirst->getZExtValue() << "," 
-                           << conssecond->getZExtValue() << "]\n";
-	      /////////////////////////new added end, try to find all possible source///////////////////////////
-              out << "Range of source state in : [" 
-                  << consfirst->getZExtValue() << "," 
-                  << conssecond->getZExtValue() << "]\n";
-	      //executor.solver->getValue(*fakeSource, arguments[2], sourceValue);
-	      //llvm::errs() << "Return value of sourceValue in getValue: " << sourceValue->getZExtValue() << "\n";
-
-	      fakeDest->addConstraint(Andv1eqexp);
-	      executor.solver->getValue(*fakeDest, arguments[3], destValue);
-	      llvm::errs() << "Return value of destValue in getValue: " 
-                           << destValue->getZExtValue() << "\n";
-              out << "Destination state: " 
-                  << destValue->getZExtValue() << "\n";
-	   }	
-	}
-    }
-}
 
 // Example usage:
 // Let K denote the number of iterations, >= DIAMETER of the FSM
@@ -3817,314 +2958,6 @@ void SpecialFunctionHandler::handleAddCheckAbstractOneRegisterMetadataGlobally(E
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-////////////////////////////For add reg forward function////////////////////////////////////////////
-void SpecialFunctionHandler::handleAddForwardRegisterMetadataGlobally(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    std::set<std::tuple<ref<Expr>,ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > ts;
-
-    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    /*if (regForward == NULL) {
-       std::string fname = "regForward.txt";
-       if (RegForwardFile != "")
-          fname = RegForwardFile; 
-       regForward = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *regForward;
-    
-    llvm::errs()  << "\nCalling function klee_add_forward_reg_metadata_globally: \n ";
-    llvm::errs() << "arg[1] = " << arguments[1] << "; arg[2] = " << arguments[2] << "; arg[3] = " << arguments[3] << "; arg[4] = " << arguments[4] << "; arg[5] = " << arguments[5] << "; arg[6] = " << arguments[6] << "; arg[7] = " << arguments[7] << "; arg[8] = " << arguments[8] << "; arg[9] = " << arguments[9] << "; arg[10] = " << arguments[10] << "; arg[11] = " << arguments[11] << "; arg[12] = " << arguments[12] << "; arg[13] = " << arguments[13] << "\n";*/
-
-    if(globalRegTupleForward.find(arguments[0]) !=  globalRegTupleForward.end())
-       ts = globalRegTupleForward[arguments[0]]; 
-           
-    ts.insert(std::make_tuple(arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7], arguments[8], arguments[9], arguments[10], arguments[11], arguments[12], arguments[13]));
-    globalRegTupleForward[arguments[0]] = ts;
-    
-    llvm::errs() << " Finish forward reg collection, total time=" 
-                << (util::getWallTime() - dontCareStartTime) << "\n"; 
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////For add_and_check_reg_abstract function////////////////////////////////////////////
-void SpecialFunctionHandler::handleAddCheckAbstractRegisterMetadataGlobally(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    //llvm::errs() << "dontCareFinishTime:" << dontCareFinishTime <<"\nstart time of klee_add_and_check_abstract_reg_metadata_globally(): " << (util::getWallTime() - dontCareFinishTime)  << "\n";
-    std::set<std::tuple<ref<Expr>,ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > tsForward;
-    std::tuple<ref<Expr>,ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > tupleb;
-
-    /*StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (regBackward == NULL) {
-       std::string fname = "regBackward.txt";
-       if (RegBackwardFile != "")
-          fname = RegBackwardFile; 
-       regBackward = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *regBackward;*/
-    numofstates++;
-    std::fstream & out = *dontcareStats;
-    out << "dontCareFinishTime:" << dontCareFinishTime <<"\nstart time of klee_add_and_check_abstract_reg_metadata_globally(): " << (util::getWallTime() - dontCareFinishTime)  << "\n";
-    
-    //llvm::errs()  << "\nCalling function klee_add_and_check_abstract_reg_metadata_globally: \n ";
-    
-    /*llvm::errs() << "arg[1] = " << arguments[1] << "; arg[2] = " << arguments[2] << "; arg[3] = " << arguments[3] << "; arg[4] = " << arguments[4] << "; arg[5] = " << arguments[5] << "; arg[6] = " << arguments[6] << "; arg[7] = " << arguments[7] << "; arg[8] = " << arguments[8] << "; arg[9] = " << arguments[9] << "; arg[10] = " << arguments[10] << "; arg[11] = " << arguments[11] << "; arg[12] = " << arguments[12] << "; arg[13] = " << arguments[13] << "\n\n";*/
-
-    if(globalRegTupleForward.find(arguments[0]) !=  globalRegTupleForward.end())
-       tsForward = globalRegTupleForward[arguments[0]]; 
-    
-    tupleb = std::make_tuple(arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7], arguments[8], arguments[9], arguments[10], arguments[11], arguments[12], arguments[13]);
-    
-    bool arg0consist, arg1consist, arg2consist, arg3consist, arg4consist, arg5consist, arg6consist, arg7consist, arg8consist, arg9consist, arg10consist, arg11consist, arg12consist;
-    bool arg0success, arg1success, arg2success, arg3success, arg4success, arg5success, arg6success, arg7success, arg8success, arg9success, arg10success, arg11success, arg12success;
-    
-    bool terminateStateDontHaveRegDiverg = false;
-    /*bool arg0successgetval, arg1successgetval, arg2successgetval, arg3successgetval, arg4successgetval, arg5successgetval, arg6successgetval, arg7successgetval, arg8successgetval, arg9successgetval, arg10successgetval, arg11successgetval, arg12successgetval;
-    ref<ConstantExpr> argvalue0, argvalue1, argvalue2, argvalue3, argvalue4, argvalue5, argvalue6, argvalue7, argvalue8, argvalue9, argvalue10, argvalue11, argvalue12;*/
-
-    /*arg0successgetval = executor.solver->getValue(state, arguments[1], argvalue0);
-    arg1successgetval = executor.solver->getValue(state, arguments[2], argvalue1);
-    arg2successgetval = executor.solver->getValue(state, arguments[3], argvalue2);
-    arg3successgetval = executor.solver->getValue(state, arguments[4], argvalue3);
-    arg4successgetval = executor.solver->getValue(state, arguments[5], argvalue4);
-    arg5successgetval = executor.solver->getValue(state, arguments[6], argvalue5);
-    arg6successgetval = executor.solver->getValue(state, arguments[7], argvalue6);
-    arg7successgetval = executor.solver->getValue(state, arguments[8], argvalue7);
-    arg8successgetval = executor.solver->getValue(state, arguments[9], argvalue8);
-    arg9successgetval = executor.solver->getValue(state, arguments[10], argvalue9);
-    arg10successgetval = executor.solver->getValue(state, arguments[11], argvalue10);
-    arg11successgetval = executor.solver->getValue(state, arguments[12], argvalue11);
-    arg12successgetval = executor.solver->getValue(state, arguments[13], argvalue12);
-    llvm::errs() << "arg0successgetval/argvalue0=" << arg0successgetval << "/" << argvalue0 
-                 << "\narg1successgetval/argvalue1=" << arg1successgetval << "/" << argvalue1
-                 << "\narg2successgetval/argvalue2=" << arg2successgetval << "/" << argvalue2 
-                 << "\narg3successgetval/argvalue3=" << arg3successgetval << "/" << argvalue3 
-                 << "\narg4successgetval/argvalue4=" << arg4successgetval << "/" << argvalue4 
-                 << "\narg5successgetval/argvalue5=" << arg5successgetval << "/" << argvalue5 
-                 << "\narg6successgetval/argvalue6=" << arg6successgetval << "/" << argvalue6 
-                 << "\narg7successgetval/argvalue7=" << arg7successgetval << "/" << argvalue7 
-                 << "\narg8successgetval/argvalue8=" << arg8successgetval << "/" << argvalue8 
-                 << "\narg9successgetval/argvalue9=" << arg9successgetval << "/" << argvalue9 
-                 << "\narg10successgetval/argvalue10=" << arg10successgetval << "/" << argvalue10 
-                 << "\narg11successgetval/argvalue11=" << arg11successgetval << "/" << argvalue11 
-                 << "\narg12successgetval/argvalue12=" << arg12successgetval << "/" << argvalue12 << "\n\n";*/
-
-    for (auto& tuplef: tsForward){
-        //llvm::errs() << "\nHandling state:" << std::get<0>(tuplef) << "from tuplef\n";
-        arg0success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<0>(tupleb), std::get<0>(tuplef)), arg0consist);
-        arg1success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<1>(tupleb), std::get<1>(tuplef)), arg1consist);
-        arg2success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<2>(tupleb), std::get<2>(tuplef)), arg2consist);
-        arg3success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<3>(tupleb), std::get<3>(tuplef)), arg3consist);
-        arg4success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<4>(tupleb), std::get<4>(tuplef)), arg4consist);
-        arg5success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<5>(tupleb), std::get<5>(tuplef)), arg5consist);
-        arg6success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<6>(tupleb), std::get<6>(tuplef)), arg6consist);
-        arg7success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<7>(tupleb), std::get<7>(tuplef)), arg7consist);
-        arg8success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<8>(tupleb), std::get<8>(tuplef)), arg8consist);
-        arg9success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<9>(tupleb), std::get<9>(tuplef)), arg9consist);
-        arg10success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<10>(tupleb), std::get<10>(tuplef)), arg10consist);
-        arg11success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<11>(tupleb), std::get<11>(tuplef)), arg11consist);
-        arg12success = executor.solver->mayBeTrue(state, EqExpr::create(std::get<12>(tupleb), std::get<12>(tuplef)), arg12consist);
-
-        /*llvm::errs() << "arg0success/consist=" << arg0success << "/" << arg0consist 
-                     << "\narg1success/consist=" << arg1success << "/" << arg1consist 
-                     << "\narg2success/consist=" << arg2success << "/" << arg2consist 
-                     << "\narg3success/consist=" << arg3success << "/" << arg3consist 
-                     << "\narg4success/consist=" << arg4success << "/" << arg4consist 
-                     << "\narg5success/consist=" << arg5success << "/" << arg5consist 
-                     << "\narg6success/consist=" << arg6success << "/" << arg6consist 
-                     << "\narg7success/consist=" << arg7success << "/" << arg7consist 
-                     << "\narg8success/consist=" << arg8success << "/" << arg8consist 
-                     << "\narg9success/consist=" << arg9success << "/" << arg9consist 
-                     << "\narg10success/consist=" << arg10success << "/" << arg10consist 
-                     << "\narg11success/consist=" << arg11success << "/" << arg11consist 
-                     << "\narg12success/consist=" << arg12success << "/" << arg12consist << "\n";*/
-        if (arg0success && arg0consist) {
-            llvm::errs() << "Check each register in state: " << (std::get<0>(tuplef)) << "\n";
-            if (((arg1consist && arg1success) || (!arg1success)) && ((arg2consist && arg2success) || (!arg2success)) && ((arg3consist && arg3success) || (!arg3success)) && ((arg4consist && arg4success) || (!arg4success)) && ((arg5consist && arg5success) || (!arg5success)) && ((arg6consist && arg6success) || (!arg6success)) && ((arg7consist && arg7success) || (!arg7success)) && ((arg8consist && arg8success) || (!arg8success)) && ((arg9consist && arg9success) || (!arg9success)) && ((arg10consist && arg10success) || (!arg10success)) && ((arg11consist && arg11success) || (!arg11success)) && ((arg12consist && arg12success) || (!arg12success)))
-                 //llvm::errs() << "All register values are consist between forward and abstract stage!\n";
-                 continue;
-            else {
-                 
-                 llvm::errs() << "Some register value(s) is(are) different!! Potential TROJAN reported here!! Time: " << (util::getWallTime() - dontCareFinishTime) << ". NumberOfStates: " << numofstates << ". Termiante state from klee_add_and_check_abstract_reg_metadata_globally()\n";
-                 out << "\nSome register value(s) is(are) different!! Potential TROJAN reported here!! Time: " << (util::getWallTime() - dontCareFinishTime) << ". NumberOfStates: " << numofstates++ << ". Termiante state from klee_add_and_check_abstract_reg_metadata_globally()\n";
-                 terminateStateDontHaveRegDiverg = true;
-                 //executor.terminateStateOnExecError(state, 
-                                         //"Some register value(s) is(are) different!! Potential TROJAN reported here!!"); 
-                 break;
-            }
-        }
-        
-        else
-            //llvm::errs() << "Can NOT find the state=" <<(std::get<0>(tupleb))<< " from forward analysis with abstract stage, go to other iteration\n";
-            continue;
-    }
-    
-    
-    //if (!terminateStateDontHaveRegDiverg)
-        //executor.terminateStateOnError(
-                                 //state, "Terminate state Don't have RegDiverging",
-                                 //Executor::TerminateReason::User);
-        
-    llvm::errs() << "DON'T find Trojan in current state, Time: " << (util::getWallTime() - dontCareFinishTime) << "\n";
-    out << "DON'T find Trojan in current state, Time: " << (util::getWallTime() - dontCareFinishTime) << "\n";
-    dontCareFinishTime = util::getWallTime();
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-////////////////////////////For 1 input variable add output function////////////////////////////////////////////
-void SpecialFunctionHandler::handleAddOutputMetadataGlobally(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > ts;
-
-    /*StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (outputForward == NULL) {
-       std::string fname = "outForward.txt";
-       if (OutputForwardFile != "")
-          fname = OutputForwardFile; 
-       outputForward = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *outputForward;
-    
-    out  << "\nCalling function klee_add_output_metadata_globally: \n ";*/
-
-    if(globalOutputTupleForward.find(arguments[0]) !=  globalOutputTupleForward.end())
-       ts = globalOutputTupleForward[arguments[0]]; 
-       
-    std::vector<ref<Expr>> pcConditiontemp = state.constraints.getConstraints();
-    ref<Expr> pcCondition = NULL;
-    for(auto pc: pcConditiontemp){
-      if (pcCondition.isNull())
-          pcCondition = pc;
-      else
-          pcCondition = AndExpr::create(pc, pcCondition);
-    }
-    ref<ConstantExpr> arg1, arg2, arg4, arg5;
-
-    executor.solver->getValue(state, arguments[1], arg1);
-    executor.solver->getValue(state, arguments[2], arg2);
-    executor.solver->getValue(state, arguments[4], arg4);
-    executor.solver->getValue(state, arguments[5], arg5);
-    
-    //ts.insert(std::make_tuple(arg1, arg2,pcCondition, arg4, arguments[5]));
-    ts.insert(std::make_tuple(arg1, arg2,pcCondition, arg4, arg5));
-    
-
-    globalOutputTupleForward[arguments[0]] = ts;
-
-    /*for(auto& tuple: ts)
-    	llvm::errs() << "previous state: " << std::get<0>(tuple) << "; next state: " << std::get<1>(tuple) << 
-		        "\n PC: " << pcCondition << "; output: " << std::get<3>(tuple)  << 
-		        "syminput var." << std::get<4>(tuple) << "\n";*/
-  /*for(auto& tuple: ts){
-        std::string Str0;
-	      llvm::raw_string_ostream info0(Str0);
-        ExprPPrinter::printSingleExpr(info0, std::get<0>(tuple));
-        out  << "\nprevious state: "<< info0.str() << "\n"; 
-
-        std::string Str1;
-      	llvm::raw_string_ostream info1(Str1);
-        ExprPPrinter::printSingleExpr(info1, std::get<1>(tuple));
-        out  << "next state: "<< info1.str() << "\n"; 
-
-        std::string Str2;
-	      llvm::raw_string_ostream info2(Str2);
-        ExprPPrinter::printSingleExpr(info2, std::get<2>(tuple));
-        out  << "input condition: "<< info2.str() << "\n"; 
-
-        std::string Str3;
-	      llvm::raw_string_ostream info3(Str3);
-        ExprPPrinter::printSingleExpr(info3, std::get<3>(tuple));
-        out  << "arg4: "<< info3.str() << "\n"; 
-
-        std::string Str4;
-	      llvm::raw_string_ostream info4(Str4);
-        ExprPPrinter::printSingleExpr(info4, std::get<4>(tuple));
-        out  << "arg5: "<< info4.str() << "\n";
-    }*/
-    
-    //out << " Finish add_output_metadata, total time=" 
-                //<< (util::getWallTime() - dontCareStartTime) << "\n"; 
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////For 1 input variable add backward output function////////////////////////////////////
-void SpecialFunctionHandler::handleAddBackOutputMetadataGlobally(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > ts;
-
-    //StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    /*if (outputBackward == NULL) {
-       std::string fname = "outBackward.txt";
-       if (OutputBackwardFile != "")
-          fname = OutputBackwardFile; 
-       outputBackward = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *outputBackward;*/
-
-
-    if(globalOutputTupleBackward.find(arguments[0]) !=  globalOutputTupleBackward.end())
-       ts = globalOutputTupleBackward[arguments[0]]; 
-       
-    std::vector<ref<Expr>> pcConditiontemp = state.constraints.getConstraints();
-    ref<Expr> pcCondition = NULL;
-    for(auto pc: pcConditiontemp){
-      if (pcCondition.isNull())
-          pcCondition = pc;
-      else
-          pcCondition = AndExpr::create(pc, pcCondition);
-    }
-
-    ref<ConstantExpr> arg1, arg2, arg4;
-    
-    //ExecutionState *fake = new ExecutionState(state);
-    
-	  std::vector<ref<Expr>> vf;
-    const std::vector<ref<Expr>> &vrFake = vf;
-	  ExecutionState *fake = new ExecutionState(vrFake);
-	  executor.solver->setTimeout(executor.coreSolverTimeout);
-         
-    executor.solver->getValue(*fake, arguments[1], arg1);
-    executor.solver->getValue(*fake, arguments[2], arg2);
-    executor.solver->getValue(*fake, arguments[4], arg4);
-
-    ts.insert(std::make_tuple(arg1, arg2,pcCondition, arg4, arguments[5]));
-        
-
-    globalOutputTupleBackward[arguments[0]] = ts;
-
-    /*for(auto& tuple: ts){
-        std::string Str0;
-	      llvm::raw_string_ostream info0(Str0);
-        ExprPPrinter::printSingleExpr(info0, std::get<0>(tuple));
-        out  << "\nprevious state: "<< info0.str() << "\n"; 
-
-        std::string Str1;
-	      llvm::raw_string_ostream info1(Str1);
-        ExprPPrinter::printSingleExpr(info1, std::get<1>(tuple));
-        out  << "next state: "<< info1.str() << "\n"; 
-
-        std::string Str2;
-	      llvm::raw_string_ostream info2(Str2);
-        ExprPPrinter::printSingleExpr(info2, std::get<2>(tuple));
-        out  << "input condition: "<< info2.str() << "\n"; 
-
-        std::string Str3;
-	      llvm::raw_string_ostream info3(Str3);
-        ExprPPrinter::printSingleExpr(info3, std::get<3>(tuple));
-        out  << "output value: "<< info3.str() << "\n"; 
-    }*/
-    //addBackOutputfinishTime = util::getWallTime();
-    //out << " Finish add_back_output_metadata, total time=" 
-                //<< (util::getWallTime() - dontCareStartTime) << "\n"; 
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void SpecialFunctionHandler::handleCheckDCTfinishTime(ExecutionState &state,
                              KInstruction *target,
                              std::vector<ref<Expr> > &arguments) {
@@ -4132,234 +2965,7 @@ void SpecialFunctionHandler::handleCheckDCTfinishTime(ExecutionState &state,
         dontCareFinishTime = (util::getWallTime());
         
 }
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void SpecialFunctionHandler::handleDetectOutputTrojan(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
 
-    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > tsf;
-    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > tsb;
-    
-    /*StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
-    if (outputTrojan == NULL) {
-       std::string fname = "outTrojan.txt";
-       if (OutputTrojanFile != "")
-          fname = OutputTrojanFile; 
-       outputTrojan = new std::fstream(fname, std::fstream::out);
-    }
-
-    std::fstream & out = *outputTrojan;*/
-    std::fstream & out = *dontcareStats;
-
-    if (globalOutputTupleForward.find(arguments[0]) !=  globalOutputTupleForward.end())
-        tsf = globalOutputTupleForward[arguments[0]];
-
-    if (globalOutputTupleBackward.find(arguments[1]) !=  globalOutputTupleBackward.end())
-        tsb = globalOutputTupleBackward[arguments[1]];
-
-    
-	  std::vector<ref<Expr>> vf;
-    const std::vector<ref<Expr>> &vrFake = vf;
-	  ExecutionState *fake = new ExecutionState(vrFake);
-         
-    //executor.solver->setTimeout(executor.coreSolverTimeout);
-    
-    //out  << "calling function klee_detect_output_trojan" << "\n";
-    for (auto& tupleb: tsb){
-
-	    ConstantExpr *constupleb0 = dyn_cast<ConstantExpr>(std::get<0>(tupleb));//prevState
-    	ConstantExpr *constupleb1 = dyn_cast<ConstantExpr>(std::get<1>(tupleb));//nextState
-    	ConstantExpr *constupleb2 = dyn_cast<ConstantExpr>(std::get<2>(tupleb));//inputCond
-    	ConstantExpr *constupleb3 = dyn_cast<ConstantExpr>(std::get<3>(tupleb));//output
-    	//ConstantExpr *constupleb4 = dyn_cast<ConstantExpr>(std::get<4>(tupleb));//symInput var
-
-	    for(auto& tuplef: tsf){
-          //executor.solver->setTimeout(executor.coreSolverTimeout);
-          
-          bool outTrojanDetectSuccess = false;
-         
-	        bool preStatMatch = false;
-          bool preStatSymMatch = false;
-          bool preStatSymMatchPC = false;        
-	        bool nextStatMatch = false;
-          bool nextStatSymMatch = false;
-          bool nextStatSymMatchPC = false;        
-	        bool inputMatch = false;
-	        bool inputSymMatch = false;
-          bool inputSymMatchPC = false;
-	        bool outputMatch = false;
-          bool outputSymMatch = false;
-
-	        ref<ConstantExpr> preStatValueForward;
-	        ref<ConstantExpr> preStatValueBackward;
-	        ref<ConstantExpr> nextStatValueForward;
-	        ref<ConstantExpr> nextStatValueBackward;
-	        ref<ConstantExpr> inputValueForward;
-	        ref<ConstantExpr> inputValueBackward;
-	        ref<ConstantExpr> outputValueForward;
-	        ref<ConstantExpr> outputValueBackward;
-
-	        ConstantExpr *constuplef0 = dyn_cast<ConstantExpr>(std::get<0>(tuplef));//prevState
-	        ConstantExpr *constuplef1 = dyn_cast<ConstantExpr>(std::get<1>(tuplef));//nextState
-	        ConstantExpr *constuplef2 = dyn_cast<ConstantExpr>(std::get<2>(tuplef));//inputCond
-	        ConstantExpr *constuplef3 = dyn_cast<ConstantExpr>(std::get<3>(tuplef));//output
-
-/////////////////////handle first element in both tuples, i.e. previous state////////////////////
-          if(constupleb0 && constuplef0){ 
-		        if (constupleb0->getZExtValue() == constuplef0->getZExtValue()) {
-		            preStatMatch = true;
-                //out << "\nfirst elements(preState) of both tuple are concrete and same\n"
-			              //<< "Previous state Forward : " << constuplef0->getZExtValue() << "\n"
-			              //<< "Previous state Backward: " << constupleb0->getZExtValue() << "\n";    
-
-	       	  }
-		       else {
-               continue;
-           }
-	        }
-	
-	       else {
-		        ref<Expr> b0eqf0 = AndExpr::create(std::get<0>(tupleb), std::get<0>(tuplef));
-          
-            if (!(executor.solver->mayBeTrue(state, b0eqf0, preStatSymMatch)) )
-                continue;                
-
-                  /*std::string Str0;
-	                llvm::raw_string_ostream info0(Str0);
-                  ExprPPrinter::printSingleExpr(info0, std::get<0>(tuplef));
-                  out  << "\nfirst elements(preState) of both tuple are symbolic and same\n"
-                       << "Previous state Forward: " << info0.str() << "\n"; 
-                       
-                  std::string Str1;
-	                llvm::raw_string_ostream info1(Str1);
-                  ExprPPrinter::printSingleExpr(info1, std::get<0>(tupleb));
-                  out  << "Previous state Backward: " << info1.str() << "\n";*/              
-	      } 
-
-/////////////////////handle second element in both tuples, i.e. next state////////////////////
-        if(constupleb1 && constuplef1) {
-		      if (constupleb1->getZExtValue() == constuplef1->getZExtValue()) {
-		          nextStatMatch = true;
-              //out << "second elements(nextState) of both tuple are concrete and same\n"
-			            //<< "Next state Forward : " << constuplef1->getZExtValue() << "\n"
-			            //<< "Next state Backward: " << constupleb1->getZExtValue() << "\n"; 
-		      }
-		    else 
-            continue;
-	      }
-             
-	    else {
-		        ref<Expr> b1eqf1 = AndExpr::create(std::get<1>(tupleb), std::get<1>(tuplef));
-            if (!(executor.solver->mayBeTrue(state, b1eqf1, nextStatSymMatch)) )
-                continue;
-                 /*std::string Str2;
-  	             llvm::raw_string_ostream info2(Str2);
-                 ExprPPrinter::printSingleExpr(info2, std::get<1>(tuplef));                
-		             out << "second elements(nextState) of both tuple are symbolic and same\n"
-			               << "Next state Forward: " << info2.str() << "\n";
-                                       
-                 std::string Str3;
-  	             llvm::raw_string_ostream info3(Str3);
-                 ExprPPrinter::printSingleExpr(info3, std::get<1>(tupleb));                
-		             out << "Next state Backward: " << info3.str() << "\n";*/
-           
-	    } 
-
-
-/////////////////////handle third element in both tuples, i.e. input condition////////////////////
-	    if(constupleb2 && constuplef2) { 
-		    if (constupleb2->getZExtValue() == constuplef2->getZExtValue()) {
-		       inputMatch = true;
-		        //out << "third elements(input) of both tuple are concrete and same\n"
-			          //<< "Input condition Forward : " << constuplef2->getZExtValue() << "\n"
-			          //<< "Input condition Backward: " << constupleb2->getZExtValue() << "\n";
-        }
-		    else 
-           continue;
-	    }
-         
-	    else {                          
-		        ref<Expr> b2eqf2 = AndExpr::create(std::get<2>(tupleb), std::get<2>(tuplef));
-		        ref<Expr> b4eqf4 = EqExpr::create(std::get<4>(tupleb), std::get<4>(tuplef)); 
-		        b4eqf4 = ZExtExpr::create(b4eqf4 ,b2eqf2->getWidth());
-		        ref<Expr> b2eqf2ANDb4eqf4 = AndExpr::create(b2eqf2, b4eqf4);
-				    if( !(executor.solver->mayBeTrue(*fake, b2eqf2ANDb4eqf4, inputSymMatch)) )
-		           continue;
-            inputMatch = true;
-                      
-                  /*std::string Str4;
-  	              llvm::raw_string_ostream info4(Str4);
-                  ExprPPrinter::printSingleExpr(info4, b2eqf2ANDb4eqf4);                                         
-	                out << "third elements(input) of both tuple are symbolic and same\n"
-			                << "Input condition: " << info4.str() << "\n"; */
-            
-	    } 
-
-/////////////////////handle fourth element in both tuples, i.e. output values////////////////////
-	    if(constupleb3 && constuplef3) { 
-		    if (constupleb3->getZExtValue() != constuplef3->getZExtValue()) {
-		        outputMatch = true;
-            outTrojanDetectSuccess = true;
-		        //out << "fourth elements(output) of both tuple are concrete and NOT same!!!\n";
-              out << "***Output value Forward : " << constuplef3->getZExtValue() << "***\n"
-		            << "***Output value Backward: " << constupleb3->getZExtValue() << "***\n";
-		               //<< "***Output value: " << constupleb3->getZExtValue() << "***\n";
-		    }
-		    else 
-           continue;
-	    }
-         
-	    else {
-		      ref<Expr> b3eqf3 = AndExpr::create(std::get<3>(tupleb), std::get<3>(tuplef));
-          if( executor.solver->mayBeTrue(*fake, b3eqf3, outputSymMatch) )
-		          continue;
-          outTrojanDetectSuccess = true;
-          /*else {
-                executor.solver->getValue(*fake, std::get<3>(tuplef), outputValueForward);
-                executor.solver->getValue(*fake, std::get<3>(tupleb), outputValueBackward);
-		            out << "fourth elements(output) of both tuple are symbolic and NOT same!!!\n"
-		                << "***Output value Forward : " << outputValueForward->getZExtValue() << "***\n"
-		                << "  ***Output value Backward: " << outputValueBackward->getZExtValue() << "***\n";
-          }*/
-	    }
-         
-      if (outTrojanDetectSuccess){
-          out << " \nFound an output Trojan: \nTime from dontCareStartTime="  << (util::getWallTime() - dontCareStartTime) 
-              << "\nTime from dontCareFinishTime = " << (util::getWallTime() - dontCareFinishTime) << "\n\n"; 
-         llvm::errs() << " \nFound an output Trojan: \nTime from dontCareStartTime="  << (util::getWallTime() - dontCareStartTime) 
-              << "\nTime from dontCareFinishTime = " << (util::getWallTime() - dontCareFinishTime) << "\n\n"; 
-          executor.terminateStateOnExecError(state, 
-                                         "Output value different!! TROJAN payload reported here!!"); 
-          /*out << "\nfirst elements(preState) of both tuple are concrete and same\n"
-			              << "Previous state Forward : " << constuplef0->getZExtValue() << "\n"
-			              << "Previous state Backward: " << constupleb0->getZExtValue() << "\n";
-                                     
-          out << "second elements(nextState) of both tuple are concrete and same\n"
-			            << "Next state Forward : " << constuplef1->getZExtValue() << "\n"
-			            << "Next state Backward: " << constupleb1->getZExtValue() << "\n";
-                                 
-          out << "third elements(input) of both tuple are symbolic and same\n";*/
-          
-           
-          /*ref<Expr> b2eqf2 = AndExpr::create(std::get<2>(tupleb), std::get<2>(tuplef));
-		        ref<Expr> b4eqf4 = EqExpr::create(std::get<4>(tupleb), std::get<4>(tuplef)); 
-		        b4eqf4 = ZExtExpr::create(b4eqf4 ,b2eqf2->getWidth());
-		        ref<Expr> b2eqf2ANDb4eqf4 = AndExpr::create(b2eqf2, b4eqf4);                      
-          std::string Str8;
-          llvm::raw_string_ostream info8(Str8);
-          ExprPPrinter::printSingleExpr(info8, b2eqf2ANDb4eqf4);                                         
-          out << "third elements(input) of both tuple are symbolic and same\n"
-			        << "Input condition: " << info8.str() << "\n";
-                         
-          out << "fourth elements(output) of both tuple are concrete and NOT same!!!\n"
-		            << "***Output value Forward : " << constuplef3->getZExtValue() << "***\n"
-		            << "***Output value Backward: " << constupleb3->getZExtValue() << "***\n";*/
-      }
-         
-	  }
-  }
-
-}
 
 void SpecialFunctionHandler::handleSetSourceState(ExecutionState &state,
                              KInstruction *target,
@@ -4460,9 +3066,323 @@ void SpecialFunctionHandler::handleClearPCGlobally(ExecutionState &state,
 }   
 
 
-////////////////////////////////////For analyze deep Trojan with Assume//////////////////////////////////////
+///////////////////////////Analyze input-dependent Trojan//////////////////////////////
+
+void SpecialFunctionHandler::handleRecordInitialStateGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+	llvm::errs() << "Calling function klee_record_initial_state():\n";
+    std::vector<ref<Expr> > ms;
+	
+	if (dontcareStats == NULL) {
+       std::string fname = "input_Troj.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+	
+	if (globalInitialStateSetMap.find(arguments[0]) != globalInitialStateSetMap.end()) 
+		ms = globalInitialStateSetMap[arguments[0]];
+	
+	llvm::errs() << "Initial state contains " << arguments.size() << " registers \n";
+	out << "Initial state contains " << arguments.size() << " registers \n";
+	for (auto i = 1; i < arguments.size() ; i++) {
+		if (arguments[i]->getKind() == Expr::Constant)
+			out << "adding Constant ";
+		else
+			out << "adding Symbolic ";
+		llvm::errs() << "arguments[" << i << "] = " << arguments[i] << "\n";
+		ms.push_back(arguments[i]);
+		
+		std::string Str1;
+		llvm::raw_string_ostream info1(Str1);
+		ExprPPrinter::printSingleExpr(info1, arguments[i]);
+		out << "initial constraint: " << info1.str() << "\n";
+	}
+	globalInitialStateSetMap[arguments[0]] = ms;
+}
 
 void SpecialFunctionHandler::handleCheckAndRecordPCWithAssumeGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+
+	llvm::errs() << "Calling function klee_check_and_record_path_condition_with_assume(): \n arg[1] (assumption) = " << arguments[1] << "\n"; 
+	assert(arguments.size()==2 && "invalid number of arguments to klee_check_and_record_path_condition_with_assume");
+	
+	std::vector<ref<Expr> > ms;
+	if (globalPCVctMap.find(arguments[0]) != globalPCVctMap.end()) 
+		ms = globalPCVctMap[arguments[0]];
+	
+	//collect current pc
+	std::vector<ref<Expr>> pc_tmp = state.constraints.getConstraints();
+	ms.insert(ms.end(), pc_tmp.begin(), pc_tmp.end());
+	
+	//handle assume condition
+	ref<Expr> e = arguments[1];
+  
+	if (e->getWidth() != Expr::Bool)
+		e = NeExpr::create(e, ConstantExpr::create(0, e->getWidth()));
+  
+	bool res;
+	bool success __attribute__ ((unused)) = executor.solver->mustBeFalse(state, e, res);
+	assert(success && "FIXME: Unhandled solver failure");
+	if (res) {
+		llvm::errs() << "Assumption doesn't hold\n";
+		executor.terminateStateOnError(state,
+                                     "invalid klee_assume call (provably false)",
+                                     Executor::User);
+	} else {
+		executor.addConstraint(state, e);
+		ms.push_back(e);
+		globalPCVctMap[arguments[0]] = ms;
+		llvm::errs() << "Assume condition hold: " << e << "\n";
+	}
+}
+
+// check satisfiable by using fake state
+void SpecialFunctionHandler::handleCheckReachInitialStateGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+
+	llvm::errs() << "\nCalling function handleCheckReachInitialStateGlobally()\n"; 
+	assert(arguments.size()==3 && "invalid number of arguments to handleCheckReachInitialStateGlobally");
+	
+	StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "input_Troj.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+	out << "\nCalling function handleCheckReachInitialStateGlobally()\n"; 
+	
+	std::vector<ref<Expr> > ms_init;
+	if (globalInitialStateSetMap.find(arguments[1]) != globalInitialStateSetMap.end()) 
+		ms_init = globalInitialStateSetMap[arguments[1]];
+
+	std::vector<ref<Expr> > ms_cur;
+	if (globalPCVctMap.find(arguments[2]) != globalPCVctMap.end()) 
+		ms_cur = globalPCVctMap[arguments[2]];
+	
+	// if reach initial, set retval to be 1, else, add current pc to ms_cur and continue
+	// to check if reaching initial state, two ways:
+	// 1) use a loop to iterate over the element of ms_cur and ms_init, create EqExpr for each element and use executor.solver->mustBeTrue(state, ...) to get results. However, I guess this way may lead to some false positives.
+	// 2) create a fake state (fake), add all constraints from  ms_cur to fake, and for each element in ms_init, using executor.solver->mustBeTrue(*fake, ...).
+	
+	std::vector<ref<Expr>> vf;
+    const std::vector<ref<Expr>> &vrFake = vf;
+	ExecutionState *fake = new ExecutionState(vrFake);
+	ExecutionState *realfake = new ExecutionState(vrFake);
+	executor.solver->setTimeout(executor.coreSolverTimeout);
+	
+	//add all constraints in ms_cur to fake state
+	/*for (auto v : ms_cur)
+		fake->addConstraint(v);*/
+	for (auto v : ms_cur) {
+		Solver::Validity res;
+		bool result = executor.solver->evaluate(*realfake, v, res);
+		//if (!result)
+		if (res != Solver::True)
+			continue;
+		fake->addConstraint(v);
+		std::string Str1;
+		llvm::raw_string_ostream info1(Str1);
+		ExprPPrinter::printSingleExpr(info1, v);
+		out << "adding: " << info1.str() << "\n";
+	}
+	
+	
+	//check if reach initial state
+	bool isInit = true;
+	for (auto e : ms_init) {
+		std::string Str1;
+		llvm::raw_string_ostream info1(Str1);
+		ExprPPrinter::printSingleExpr(info1, e);
+		out << "constraint: " << info1.str() << "\n";
+		
+		bool res;
+		bool success = executor.solver->mayBeTrue(*fake, e, res);
+		if (res) {
+			llvm::errs() << "Element mayBeTrue\n";
+			out << "Element mayBeTrue;\n";
+			continue;
+		} else {
+			llvm::errs() << "Element mustBeFalse\n";
+			out << "Element mustBeFalse;\n";
+			isInit = false;
+			break;
+		}
+	}
+	
+	
+	// if in initial state, write memory of arguments[0] (retval) to 1, indicate reach initial state
+	if (isInit) {
+		llvm::errs() << "Reach Initial state!\n";
+		out << "Reach Initial state!\n";
+		out << "Total time: " << util::getWallTime() - dontCareStartTime << "s/" << (util::getWallTime() - dontCareStartTime)/60.0 << "min\n";
+		
+		// find the memory object (MemoryObject) mo that corresponds to arg[0] in state
+		ObjectPair op; //def: typedef std::pair<const MemoryObject*, const ObjectState*> ObjectPair;
+		bool success;
+		executor.solver->setTimeout(((Executor*)(theInterpreter))->coreSolverTimeout); 
+		if (!state.addressSpace.resolveOne(state, executor.solver, arguments[0], op, success)) {
+			llvm::errs() << "Before toConstant, arguments[0]=" << arguments[0] << "\n";
+			arguments[0] = ((Executor*)(theInterpreter))->toConstant(state, arguments[0], "resolveOne failure");
+			llvm::errs() << "After toConstant, arguments[0]=" << arguments[0] << "\n";
+			success = state.addressSpace.resolveOne(cast<ConstantExpr>(arguments[0]), op);
+		}
+		executor.solver->setTimeout(0);
+		if (success) {
+			const MemoryObject *mo = op.first;
+			//const ObjectState *os = state.addressSpace.findObject(mo);
+			ObjectState *wos = state.addressSpace.getWriteable(op.first, op.second);	
+			wos->write64(0, 1);
+			llvm::errs() << "Writing uint64_t 1 to arguments[0]";
+			out << "SUCCESS! Writing uint64_t 1 to arguments[0]";
+		} else 
+			executor.terminateStateOnError(state, 
+										"Failed to get objectpair from resolveOne", 
+										Executor::User);
+	} else {
+	// if not in initial state, save current pc to ms_cur, and continue backward SymeEx
+		llvm::errs() << "NOT reach Initial state, collect current pc\n";
+		out << "NOT reach Initial state, collect current pc \n";
+				
+		std::vector<ref<Expr>> pc_tmp = state.constraints.getConstraints();
+		ms_cur.insert(ms_cur.end(), pc_tmp.begin(), pc_tmp.end());
+		globalPCVctMap[arguments[2]] = ms_cur;
+	}
+	
+} 
+
+// check satisfiable by comparing each internal register
+void SpecialFunctionHandler::handleCheckReachInitialStateRegGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+
+	llvm::errs() << "\nCalling function klee_check_reach_initial_state_reg()\n"; 
+	
+	std::vector<ref<Expr> > ms_init;
+	if (globalInitialStateSetMap.find(arguments[1]) != globalInitialStateSetMap.end()) 
+		ms_init = globalInitialStateSetMap[arguments[1]];
+	
+	unsigned int arg_offset = 2;
+	assert(arguments.size()==(ms_init.size() + arg_offset) && "invalid number of arguments to klee_check_reach_initial_state_reg");
+	
+	StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "input_Troj.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
+
+    std::fstream & out = *dontcareStats;
+	out << "\nCalling function klee_check_reach_initial_state_reg()\n"; 
+	
+	std::vector<ref<Expr>> vf;
+    const std::vector<ref<Expr>> &vrFake = vf;
+	ExecutionState *fake = new ExecutionState(vrFake);
+	ExecutionState *realfake = new ExecutionState(vrFake);
+	executor.solver->setTimeout(executor.coreSolverTimeout);
+	
+	// check if reach initial state, by comparing each internal register from initial state (i1) and current state (c1)
+	// if i1 and c1 are both symbolic value, using AndExpr::create
+	// if i1 or c1 is constant value, using EqExpr::create
+	
+	bool isInit = true;
+	for (auto index = 0; index < ms_init.size(); index++) {
+		ref<Expr> initEqcur;
+		std::string Str1;
+		llvm::raw_string_ostream info1(Str1);
+		
+		// if either is constant
+		if ((arguments[index+arg_offset]->getKind() == Expr::Constant) | (ms_init[index]->getKind() == Expr::Constant)) {
+			initEqcur = EqExpr::create(arguments[index+arg_offset], ms_init[index]);
+			
+			ExprPPrinter::printSingleExpr(info1, initEqcur);
+			out << "Create EqExpr, result = " << info1.str() << ";\t";
+		} else {
+			initEqcur = AndExpr::create(arguments[index+arg_offset], ms_init[index]);
+			
+			ExprPPrinter::printSingleExpr(info1, initEqcur);
+			out << "Create AndExpr, result = " << info1.str() << ";\t";
+		}
+		
+		bool res;
+		//bool success = executor.solver->mayBeTrue(*fake, initEqcur, res);
+		bool success = executor.solver->mayBeTrue(state, initEqcur, res);
+		if (res) {
+			llvm::errs() << "Element mayBeTrue\n";
+			out << "Element mayBeTrue\n";
+			continue;
+		} else {
+			llvm::errs() << "Element mustBeFalse\n";
+			out << "Element mustBeFalse\n";
+			isInit = false;
+			break;
+		}
+	}
+
+	
+	// if in initial state, write memory of arguments[0] (retval) to 1, indicate reach initial state
+	if (isInit) {
+		llvm::errs() << "Reach Initial state!\n";
+		out << "Reach Initial state!\n";
+		out << "Total time: " << util::getWallTime() - dontCareStartTime << "s/" << (util::getWallTime() - dontCareStartTime)/60.0 << "min\n";
+		
+		out << "Current pc\n";
+		std::vector<ref<Expr>> pc_cur = state.constraints.getConstraints();
+		for (auto v : pc_cur) {
+			std::string str;
+			llvm::raw_string_ostream info(str);
+			ExprPPrinter::printSingleExpr(info, v);
+			out << info.str() << "\n";
+		}
+		
+		llvm::errs() << "Current pc: \n";
+		ExprPPrinter::printConstraints(llvm::errs(), state.constraints);
+		// find the memory object (MemoryObject) mo that corresponds to arg[0] in state
+		ObjectPair op; //def: typedef std::pair<const MemoryObject*, const ObjectState*> ObjectPair;
+		bool success;
+		executor.solver->setTimeout(((Executor*)(theInterpreter))->coreSolverTimeout); 
+		if (!state.addressSpace.resolveOne(state, executor.solver, arguments[0], op, success)) {
+			llvm::errs() << "Before toConstant, arguments[0]=" << arguments[0] << "\n";
+			arguments[0] = ((Executor*)(theInterpreter))->toConstant(state, arguments[0], "resolveOne failure");
+			llvm::errs() << "After toConstant, arguments[0]=" << arguments[0] << "\n";
+			success = state.addressSpace.resolveOne(cast<ConstantExpr>(arguments[0]), op);
+		}
+		executor.solver->setTimeout(0);
+		if (success) {
+			const MemoryObject *mo = op.first;
+			//const ObjectState *os = state.addressSpace.findObject(mo);
+			ObjectState *wos = state.addressSpace.getWriteable(op.first, op.second);	
+			wos->write64(0, 1);
+			llvm::errs() << "Writing uint64_t 1 to arguments[0]\n";
+			out << "SUCCESS! Writing uint64_t 1 to arguments[0]\n";
+		} else 
+			executor.terminateStateOnError(state, 
+										"Failed to get objectpair from resolveOne", 
+										Executor::User);
+	} else {
+	// if not in initial state, save current pc to ms_cur, and continue backward SymeEx
+		llvm::errs() << "NOT reach Initial state, continue\n";
+		out << "NOT reach Initial state, continue ... \n";
+				
+		/*std::vector<ref<Expr>> pc_tmp = state.constraints.getConstraints();
+		ms_cur.insert(ms_cur.end(), pc_tmp.begin(), pc_tmp.end());
+		globalPCVctMap[arguments[2]] = ms_cur;*/
+	}
+	
+} 
+  
+////////////////////////////////////For analyze deep Trojan with Assume//////////////////////////////////////
+
+/*void SpecialFunctionHandler::handleCheckAndRecordPCWithAssumeGlobally(ExecutionState &state,
                              KInstruction *target,
                              std::vector<ref<Expr> > &arguments) {
     std::vector<ref<Expr> > ms;
@@ -4485,14 +3405,10 @@ void SpecialFunctionHandler::handleCheckAndRecordPCWithAssumeGlobally(ExecutionS
        bool result=false;
        bool satisfyAssume = executor.solver->mayBeTrue(state, e, result);
        
-       //ref<ConstantExpr> conste;
-       //executor.solver->getValue(state, e, conste);
-       //llvm::errs() << "Possible value for e: " << conste << "\n";   
-       
        if (satisfyAssume && result) {
            ms.push_back(e);
            globalPCVctMap[arguments[0]] = ms;
-           llvm::errs() << "Assume condition ***Maybe TRUE***! after simplifyExpr(): " << e << "\n";
+           llvm::errs() << "Assume condition hold: " << e << "\n";
            
            state.addConstraint(e);
            ref<ConstantExpr> conste;
@@ -4505,7 +3421,7 @@ void SpecialFunctionHandler::handleCheckAndRecordPCWithAssumeGlobally(ExecutionS
            executor.terminateStateOnError(state,"Assumption doesn't hold from klee_check_and_record_path_condition_with_assume",
                                      Executor::User);
       }
-  }            
+  }*/
     //////////////Begin: collect current PC and add Assumption(s)
     /*std::vector<ref<Expr>> pcConditiontemp = state.constraints.getConstraints();
     ref<Expr> pcCondition = NULL;
@@ -4523,7 +3439,8 @@ void SpecialFunctionHandler::handleCheckAndRecordPCWithAssumeGlobally(ExecutionS
     
     
     ////////////////End: collect current path condition
-}
+
+/*}*/
 
                   
 ////////////////////////////////////For analyze deep Trojan without Assume//////////////////////////////////////
@@ -4596,6 +3513,38 @@ void SpecialFunctionHandler::handleCheckAndRecordPCGlobally(ExecutionState &stat
     ////////////////End: collect current path condition
 }
 
+  
+
+/* ///////////////start of hybird fuzzing implementations //////////////////////*/
+void SpecialFunctionHandler::handleAddGuardSignal(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+    //llvm::errs() << "Calling function klee_add_guard_signal():\n";
+                                 
+    std::set<ref<Expr> > ms;
+    std::set<ref<Expr> > msInput;//container for input variable
+    //llvm::errs() << "Value of arg[1] in forward execution " << arguments[1] << "\n";
+    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
+        ms = globalMetadataSetMap[arguments[0]];
+        
+    ConstantExpr *constantarg1 = dyn_cast<ConstantExpr>(arguments[1]);
+    if (constantarg1){
+        ms.insert(arguments[1]);
+    }
+    else{
+        ref<ConstantExpr> constarg1;
+        if (executor.solver->getValue(state, arguments[1], constarg1))
+            ms.insert(constarg1);
+        else
+            llvm::errs() << "Can NOT resolve arguments[1] in klee_add_guard_signal()\n";
+        }
+        ////End: Convert symbolic arguments[1] to concrete arguments[1]////
+         
+}
+/* ///////////////end of hybird fuzzing implementations ///////////////////////*/
+
+
+
 
 ////////////////////////////////////Get input sequence/////////////////////////////
 void SpecialFunctionHandler::handleAcquireInputPatternGlobally(ExecutionState &state,
@@ -4656,7 +3605,7 @@ void SpecialFunctionHandler::handleAcquireInputPatternGlobally(ExecutionState &s
              //executor.terminateStateOnError(state,"Value for arg1 CANNOT FOUND!", Executor::User);
         }
     }
-    //2>&1 | tee temp.txt
+    
     //////////arguments[2]////////////////
     ConstantExpr *constantarg2 = dyn_cast<ConstantExpr>(arguments[2]);
     if (constantarg2)
@@ -5062,15 +4011,13 @@ void SpecialFunctionHandler::handleRecordStepTraceLocally(ExecutionState &state,
 }
 // Versym extension end: Record the instructions executed in the last step, e.g., clock cycle.
 
-////////////////////////////For 1 input variable FSM function////////////////////////////////////
+ ///@{ HWDCT extension
 void SpecialFunctionHandler::handleAddMetadataGlobally(ExecutionState &state,
                              KInstruction *target,
                              std::vector<ref<Expr> > &arguments) {
-    //llvm::errs() << "Calling function klee_add_metadata_globally():\n";
+    llvm::errs() << "Calling function klee_add_metadata_globally():\n";
                                  
     std::set<ref<Expr> > ms;
-    std::set<ref<Expr> > msInput;//container for input variable
-    //llvm::errs() << "Value of arg[1] in forward execution " << arguments[1] << "\n";
     if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
        ms = globalMetadataSetMap[arguments[0]]; 
 
@@ -5079,51 +4026,31 @@ void SpecialFunctionHandler::handleAddMetadataGlobally(ExecutionState &state,
     
     ref<ConstantExpr> arg1;
     
-	  std::vector<ref<Expr>> vf;
+	std::vector<ref<Expr>> vf;
     const std::vector<ref<Expr>> &vrFake = vf;
-	  ExecutionState *fake = new ExecutionState(vrFake);
-	  executor.solver->setTimeout(executor.coreSolverTimeout);
+	ExecutionState *fake = new ExecutionState(vrFake);
+	executor.solver->setTimeout(executor.coreSolverTimeout);
              
-    if (constarg1){
-        for (auto v : ms){
+    if (constarg1) {
+        for (auto v : ms) {
             ConstantExpr *constv = dyn_cast<ConstantExpr>(v);
-                if (constv->getZExtValue() == constarg1->getZExtValue()){
-                    terminateSuccess = true;
-                    break;
-                }
-            
-                else 
-                    continue;
+			if (constv->getZExtValue() == constarg1->getZExtValue()){
+				terminateSuccess = true;
+				break;
+			} else 
+				continue;
         }
     }
-    /*else{
-        executor.solver->getValue(*fake, arguments[1], arg1);
-        for (auto v : ms){
-            ConstantExpr *constv = dyn_cast<ConstantExpr>(v);
-                if (constv->getZExtValue() == constarg1->getZExtValue()){
-                    terminateSuccess = true;
-                    break;
-                }
-            
-                else 
-                    continue;
-        }
-    }*/
-           
     
     if (PruningMode == true){
-        if (terminateSuccess == true){
+        if (terminateSuccess == true) {
             //llvm::errs() << "terminate state" <<  arguments[1] << "successfully \n";
             executor.terminateState(state);
             return;
-        }
-        
-        else{
+        } else {
             if(constarg1){
                 ms.insert(arguments[1]);
-            }
-            
-            else{
+			} else{
    	            ////Begin: Convert symbolic arguments[1] to concrete arguments[1]////
                 std::pair<ref<Expr>, ref<Expr>> rsSymbolic1 = executor.solver->getRange(state, arguments[1]);
         
@@ -5141,17 +4068,13 @@ void SpecialFunctionHandler::handleAddMetadataGlobally(ExecutionState &state,
                     ms.insert(ConstantExpr::create(v2, arguments[1]->getWidth())); 
                 }
                 ////End: Convert symbolic arguments[1] to concrete arguments[1]////
-           }
+			}
         }
-    }
-    
-    else{
-    
-        ConstantExpr *constantarg1 = dyn_cast<ConstantExpr>(arguments[1]);
-        if(constantarg1){
+    } else {
+		ConstantExpr *constantarg1 = dyn_cast<ConstantExpr>(arguments[1]);
+        if(constantarg1) {
             ms.insert(arguments[1]);
-        }
-        else{
+        } else {
    	        ////Begin: Convert symbolic arguments[1] to concrete arguments[1]////
             std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(state, arguments[1]);
         
@@ -5167,371 +4090,586 @@ void SpecialFunctionHandler::handleAddMetadataGlobally(ExecutionState &state,
                 auto v2 = v1;
                 ms.insert(ConstantExpr::create(v2, arguments[1]->getWidth())); 
             }
-                ////End: Convert symbolic arguments[1] to concrete arguments[1]////
+            ////End: Convert symbolic arguments[1] to concrete arguments[1]////
            } 
         }
     globalMetadataSetMap[arguments[0]] = ms;
-    /*for(auto v : ms){
-       llvm::errs() << "reachable states from add_meta_global: " << v << "\n";      
-       std::string Str4;
-	     llvm::raw_string_ostream info4(Str4);
-       ExprPPrinter::printSingleExpr(info4, v);
-       llvm::errs() << " Adding metadata " << info4.str() << "to RS"; 
-    }*/
-
-    //llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
-        
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end()) 
-       msInput = globalInputSetMap[arguments[0]]; 
-    msInput.insert(arguments[2]);
-    //for(auto v1 : msInput)
-       //llvm::errs() << "reachable input variable first: " << v1 << "\n";
-    globalInputSetMap[arguments[0]] = msInput;
-    //llvm::errs() << "Adding input variable " << arguments[2] << " to the set msInput\n";
-    
+	
+    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";   
       
 }
 
-////////////////////////////For 2 input variables FSM function////////////////////////////////////
-void SpecialFunctionHandler::handleAddMetadataGloballyTwoInput(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    std::set<ref<Expr> > ms;
-    std::set<ref<Expr> > msInput;//container for input variable
-    std::set<ref<Expr> > msInputTwo;
-
-    llvm::errs() << "Value of arg[1] in forward execution " << arguments[1] << "\n";
-    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
-       ms = globalMetadataSetMap[arguments[0]]; 
-       
-    bool terminateSuccess = false;
-    ConstantExpr *constarg1 = dyn_cast<ConstantExpr>(arguments[1]);
-    if (constarg1){
-        for (auto v : ms){
-            ConstantExpr *constv = dyn_cast<ConstantExpr>(v);
-            if (constv->getZExtValue() == constarg1->getZExtValue()){
-                terminateSuccess = true;
-                break;
-            }
-            
-            else 
-                continue;
-        }
+////////////////////////////////DCT Detection//////////////////////////////////////////
+void SpecialFunctionHandler::handleDontCareTransitionGlobally(
+                                    ExecutionState &state,
+                                    KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+    //llvm::errs() << "Handle don't care transition, args: " << arguments[0] << " " << arguments[1] 
+                // << " \n" << arguments[2] << "\n"<<arguments[3]<< "\n";
+    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "dontcarestats.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
     }
-    if (PruningMode == true){    
-        if (terminateSuccess == true){
-            llvm::errs() << "terminate state" <<  arguments[1] << "successfully \n";
-            executor.terminateState(state);
-            return;
-        }
 
-        else{
+    std::fstream & out = *dontcareStats;
+    /////////start: hander reachable set from forward execution//////////////////       
+    std::set<ref<Expr> > rs;
+    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end())
+       rs = globalMetadataSetMap[arguments[0]];
+    ref<Expr> reachable = NULL;
     
-            ConstantExpr *constantarg1 = dyn_cast<ConstantExpr>(arguments[1]);
-            if(constantarg1)
-               ms.insert(arguments[1]); 
-            else{                
-                std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(state, arguments[1]);
-        
-                ref<Expr> rsSymbolicFirst = rsSymbolic.first;
-                auto rsSymbolicFirstConstant = dyn_cast<ConstantExpr>(rsSymbolicFirst);
-                uint64_t rsSymbolicFirstUint = rsSymbolicFirstConstant->getZExtValue();
-        
-                ref<Expr> rsSymbolicSecond = rsSymbolic.second;
-                auto rsSymbolicSecondConstant = dyn_cast<ConstantExpr>(rsSymbolicSecond);
-                uint64_t rsSymbolicSecondUint = rsSymbolicSecondConstant->getZExtValue();
-        
-                for(auto v1 = rsSymbolicFirstUint; v1 <= rsSymbolicSecondUint; v1++){
-		               auto v2 = v1;
-		               //rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
-                   ms.insert(ConstantExpr::create(v2, arguments[1]->getWidth())); 
-                }
-           } 	    
-
-        }
-    }    
-    else{
-        ConstantExpr *constantarg2 = dyn_cast<ConstantExpr>(arguments[1]);
-        if(constantarg2)
-           ms.insert(arguments[1]); 
-        else{             
-             std::pair<ref<Expr>, ref<Expr>> rsSymbolic2 = executor.solver->getRange(state, arguments[1]);
-        
-             ref<Expr> rsSymbolicFirst2 = rsSymbolic2.first;
-             auto rsSymbolicFirstConstant2 = dyn_cast<ConstantExpr>(rsSymbolicFirst2);
-             uint64_t rsSymbolicFirstUint2 = rsSymbolicFirstConstant2->getZExtValue();
-        
-             ref<Expr> rsSymbolicSecond2 = rsSymbolic2.second;
-             auto rsSymbolicSecondConstant2 = dyn_cast<ConstantExpr>(rsSymbolicSecond2);
-             uint64_t rsSymbolicSecondUint2 = rsSymbolicSecondConstant2->getZExtValue();
-        
-             for(auto v1 = rsSymbolicFirstUint2; v1 <= rsSymbolicSecondUint2; v1++){
-                 auto v2 = v1;
-		             //rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
-                 ms.insert(ConstantExpr::create(v2, arguments[1]->getWidth())); 
-             }
-         }     
-    }
-        //ms.insert(arguments[1]); 
+    /*out << " Explore all state space, Time=" 
+        << (util::getWallTime() - dontCareStartTime);*/
  
-    for(auto v : ms)
-       llvm::errs() << "reachable states from add_meta_global: " << v << "\n";
-    globalMetadataSetMap[arguments[0]] = ms;
-    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
-
-
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end()) 
-       msInput = globalInputSetMap[arguments[0]]; 
-    msInput.insert(arguments[2]);
-    for(auto v1 : msInput)
-       llvm::errs() << "reachable input variable first: " << v1 << "\n";
-    globalInputSetMap[arguments[0]] = msInput;
-    llvm::errs() << "Adding input variable " << arguments[2] << " to the set msInputFirst\n";
-
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end()) 
-       msInputTwo = globalTwoInputSetMap[arguments[0]]; 
-    msInputTwo.insert(arguments[3]);
-    for(auto v2 : msInputTwo)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalTwoInputSetMap[arguments[0]] = msInputTwo;
-    llvm::errs() << "Adding input variable " << arguments[3] << " to the set msInputSecond\n";
-}
-
-////////////////////////////For 3 input variables FSM function////////////////////////////////////
-void SpecialFunctionHandler::handleAddMetadataGloballyThreeInput(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    std::set<ref<Expr> > ms;
-    std::set<ref<Expr> > msInput;//container for input variable
-    std::set<ref<Expr> > msInputTwo;
-    std::set<ref<Expr> > msInputThree;
-
-    //llvm::errs() << "Value of arg[1] in forward execution " << arguments[1] << "\n";
-    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
-       ms = globalMetadataSetMap[arguments[0]];
-       
-    bool terminateSuccess = false;
-    ConstantExpr *constarg1 = dyn_cast<ConstantExpr>(arguments[1]);
-    if (constarg1){
-        for (auto v : ms){
-            ConstantExpr *constv = dyn_cast<ConstantExpr>(v);
-            if (constv->getZExtValue() == constarg1->getZExtValue()){
-                terminateSuccess = true;
-                break;
-            }
-            
-            else 
-                continue;
-        }
-    }
-    
-    if (PruningMode == true){      
-        if (terminateSuccess == true){
-            llvm::errs() << "terminate state" <<  arguments[1] << "successfully \n";
-            executor.terminateState(state);
-            return;
-        }
-
-        else{
-    
-            ConstantExpr *constarg1 = dyn_cast<ConstantExpr>(arguments[1]);
-            if(constarg1)
-               ms.insert(arguments[1]); 
-            else{
-          	    ////Begin: Convert symbolic arguments[1] to concrete arguments[1]////
-                //std::set<ref<Expr> > rsConcrete;
-                //ref<ConstantExpr> result;
-                std::pair<ref<Expr>, ref<Expr>> rsSymbolic = executor.solver->getRange(state, arguments[1]);
-        
-                ref<Expr> rsSymbolicFirst = rsSymbolic.first;
-                auto rsSymbolicFirstConstant = dyn_cast<ConstantExpr>(rsSymbolicFirst);
-                uint64_t rsSymbolicFirstUint = rsSymbolicFirstConstant->getZExtValue();
-        
-                ref<Expr> rsSymbolicSecond = rsSymbolic.second;
-                auto rsSymbolicSecondConstant = dyn_cast<ConstantExpr>(rsSymbolicSecond);
-                uint64_t rsSymbolicSecondUint = rsSymbolicSecondConstant->getZExtValue();
-        
-                for(auto v1 = rsSymbolicFirstUint; v1 <= rsSymbolicSecondUint; v1++){
-		               auto v2 = v1;
-		               //rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
-                   ms.insert(ConstantExpr::create(v2, arguments[1]->getWidth())); 
-                }
-                ////End: Convert symbolic arguments[1] to concrete arguments[1]////
-           } 
+    for(auto v : rs) {
+		/* std::string Str2;
+  	    llvm::raw_string_ostream info2(Str2);
+        ExprPPrinter::printSingleExpr(info2, v);
+        out << "reachable set from rs: " << info2.str() << "\n"; */
+		ref<Expr> eqexp = EqExpr::create(arguments[2], v);
+		if (reachable.isNull())
+			reachable = eqexp;
+		else {
+          ref<Expr> temp = reachable;
+          reachable = OrExpr::create(temp, eqexp);
        }
-    }
+    }  
+    if (reachable.isNull())
+        return;
+
+    ref<Expr> notreachable = NotExpr::create(reachable); 
+    //llvm::errs() << "Value of notreachable: " << notreachable << "\n"; 
+    /////////end: hander reachable set from forward execution////////////////// 
+
+
+    /////////end: hander first input variable//////////////////
+    bool terminateSuccessDest = false;
+	
+    for(auto v1 : rs) {
+		bool sourceMatches;
+		bool destMatches;
+        ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
+
+		ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
+  	    ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
+		ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
+	      //executor.solver->setTimeout(executor.coreSolverTimeout);
+     
+   	    std::vector<ref<Expr>> vf;
+        const std::vector<ref<Expr>> &vrDest = vf;
+		ExecutionState *fakeDest = new ExecutionState(vrDest);
+        executor.solver->setTimeout(executor.coreSolverTimeout);
+      
+		ref<ConstantExpr> sourceValue;
+  	    ref<ConstantExpr> destValue;
+	
+        bool destSuccess = executor.solver->mayBeTrue(state, Andv1eqexp, destMatches);
+
+		if (destSuccess && destMatches) {
+			executor.solver->setTimeout(executor.coreSolverTimeout);
+            //ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
+			ref<Expr> notreachableANDinputs = notreachable;
+              
+            bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
+            if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
+                terminateSuccessDest = true;
+                out << " Found a don't care transition, Time=" 
+                    << (util::getWallTime() - dontCareStartTime) << "s\n";
+				
+                ExecutionState *fakeSource = new ExecutionState(state);
+                fakeSource->addConstraint(notreachableANDinputs);
+              
+                std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
+                ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
+                ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
+				
+                out << "Range of source state in : [" 
+                    << consfirst->getZExtValue() << "," 
+                    << conssecond->getZExtValue() << "]\n";
+					
+                fakeDest->addConstraint(Andv1eqexp);
+                executor.solver->getValue(*fakeDest, arguments[3], destValue);
+                out << "Destination state: " 
+                    << destValue->getZExtValue() << "\n";
+            } else
+                continue;
+        	
+		} else
+            continue;
+	}
     
-    else{
-        ConstantExpr *constantarg2 = dyn_cast<ConstantExpr>(arguments[1]);
-        if(constantarg2)
-           ms.insert(arguments[1]); 
-        else{
-             std::pair<ref<Expr>, ref<Expr>> rsSymbolic2 = executor.solver->getRange(state, arguments[1]);
-        
-             ref<Expr> rsSymbolicFirst2 = rsSymbolic2.first;
-             auto rsSymbolicFirstConstant2 = dyn_cast<ConstantExpr>(rsSymbolicFirst2);
-             uint64_t rsSymbolicFirstUint2 = rsSymbolicFirstConstant2->getZExtValue();
-        
-             ref<Expr> rsSymbolicSecond2 = rsSymbolic2.second;
-             auto rsSymbolicSecondConstant2 = dyn_cast<ConstantExpr>(rsSymbolicSecond2);
-             uint64_t rsSymbolicSecondUint2 = rsSymbolicSecondConstant2->getZExtValue();
-        
-             for(auto v1 = rsSymbolicFirstUint2; v1 <= rsSymbolicSecondUint2; v1++){
-                 auto v2 = v1;
-		             //rsConcrete.insert(ConstantExpr::create(v2, arguments[2]->getWidth()));
-                 ms.insert(ConstantExpr::create(v2, arguments[1]->getWidth())); 
-             }
-         }       
+	if ((terminateSuccessDest == false) && (TerminateNoDCTState==true)){
+		executor.terminateState(state);
+		return;
+	}
+	dontCareFinishTime = util::getWallTime();
+}
+
+///For add reg forward
+void SpecialFunctionHandler::handleAddForwardRegisterMetadataGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {	
+	std::vector<ref<Expr>> tv;
+	
+    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+
+/*     if(globalRegTupleForward.find(arguments[0]) !=  globalRegTupleForward.end())
+       tv = globalRegTupleForward[arguments[0]]; */
+    
+	for (auto index = 1; index < arguments.size(); index++)
+		tv.push_back(arguments[index]);
+	
+    globalRegTupleForward[arguments[0]] = tv;
+    
+    llvm::errs() << " Finish forward reg collection, total time=" 
+                << (util::getWallTime() - dontCareStartTime) << "\n"; 
+}
+
+//////////////////////////////Trojan Predictoin//////////////////////////////
+void SpecialFunctionHandler::handleAddCheckAbstractRegisterMetadataGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+    //llvm::errs() << "dontCareFinishTime:" << dontCareFinishTime <<"\nstart time of klee_add_and_check_abstract_reg_metadata_globally(): " << (util::getWallTime() - dontCareFinishTime)  << "\n";
+	
+	std::vector<ref<Expr>> tvForward;
+	std::vector<ref<Expr>> tvBackward;
+	
+    numofstates++;
+    std::fstream & out = *dontcareStats;
+    out << "\nFinish abstract analysis, total time (dontCareFinishTime):" << (util::getWallTime() - dontCareStartTime) << "s\nstart time of klee_add_and_check_abstract_reg_metadata_globally(): " << (util::getWallTime() - dontCareFinishTime)  << "\n";
+
+    if (globalRegTupleForward.find(arguments[0]) !=  globalRegTupleForward.end())
+       tvForward = globalRegTupleForward[arguments[0]];
+	
+	for (auto index = 1; index < arguments.size(); index++)
+		tvBackward.push_back(arguments[index]);
+	
+	if ((tvForward.size() != tvBackward.size()) || (tvForward.empty() || tvBackward.empty())) {
+		out << "FATAL! Size of tvForward and tvBackward different!\n\n";
+		return;
+	}
+	
+	// compare all elements from two vectors
+	bool success, result;
+	bool troj_pred = false;
+	for (auto index = 0; index < (arguments.size()-1); index++) {
+		success = executor.solver->mayBeTrue(state, EqExpr::create(tvForward[index], tvBackward[index]), result);
+		if (success && result) { //tvForward[index] == tvBackward[index]
+			continue;
+		} else {
+			troj_pred = true;
+			break;
+		}
+	}
+	
+	if (troj_pred) {
+		out << "Some register value(s) is(are) different!! Potential TROJAN reported here!! Time: " << (util::getWallTime() - dontCareFinishTime) << "s\n";
+		executor.terminateState(state);
+		return;
+	}
+}
+
+//////////////////////////// add forward output ////////////////////////////////////////////
+void SpecialFunctionHandler::handleAddOutputMetadataGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > ts;
+
+    if(globalOutputTupleForward.find(arguments[0]) !=  globalOutputTupleForward.end())
+       ts = globalOutputTupleForward[arguments[0]]; 
+       
+    std::vector<ref<Expr>> pcConditiontemp = state.constraints.getConstraints();
+    ref<Expr> pcCondition = NULL;
+    for(auto pc: pcConditiontemp){
+      if (pcCondition.isNull())
+          pcCondition = pc;
+      else
+          pcCondition = AndExpr::create(pc, pcCondition);
     }
-    //ms.insert(arguments[1]); 
+    ref<ConstantExpr> arg1, arg2, arg4;
+
+    executor.solver->getValue(state, arguments[1], arg1);
+    executor.solver->getValue(state, arguments[2], arg2);
+    executor.solver->getValue(state, arguments[4], arg4);
+    
+    ts.insert(std::make_tuple(arg1, arg2,pcCondition, arg4));
+    globalOutputTupleForward[arguments[0]] = ts;
+}
+
+/// add backward output function
+void SpecialFunctionHandler::handleAddBackOutputMetadataGlobally(ExecutionState &state,
+                             KInstruction *target,
+                             std::vector<ref<Expr> > &arguments) {
+    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > ts;
+
+    if(globalOutputTupleBackward.find(arguments[0]) !=  globalOutputTupleBackward.end())
+       ts = globalOutputTupleBackward[arguments[0]]; 
+       
+    std::vector<ref<Expr>> pcConditiontemp = state.constraints.getConstraints();
+    ref<Expr> pcCondition = NULL;
+    for(auto pc: pcConditiontemp){
+      if (pcCondition.isNull())
+          pcCondition = pc;
+      else
+          pcCondition = AndExpr::create(pc, pcCondition);
+    }
+
+    ref<ConstantExpr> arg1, arg2, arg4;
+    
+    //ExecutionState *fake = new ExecutionState(state);
+    
+	  std::vector<ref<Expr>> vf;
+    const std::vector<ref<Expr>> &vrFake = vf;
+	  ExecutionState *fake = new ExecutionState(vrFake);
+	  executor.solver->setTimeout(executor.coreSolverTimeout);
          
-    //for(auto v : ms)
-       //llvm::errs() << "reachable states from add_meta_global: " << v << "\n";
-    globalMetadataSetMap[arguments[0]] = ms;
-    //llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+    executor.solver->getValue(*fake, arguments[1], arg1);
+    executor.solver->getValue(*fake, arguments[2], arg2);
+    executor.solver->getValue(*fake, arguments[4], arg4);
 
-    ///////////////////////////////////1st input var.//////////////////////////////////////////
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end()) 
-       msInput = globalInputSetMap[arguments[0]]; 
-    msInput.insert(arguments[2]);
-    //for(auto v1 : msInput)
-       //llvm::errs() << "reachable input variable first: " << v1 << "\n";
-    globalInputSetMap[arguments[0]] = msInput;
-    //llvm::errs() << "Adding input variable " << arguments[2] << " to the set msInputFirst\n";
-    ///////////////////////////////////2nd input var.//////////////////////////////////////////
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end()) 
-       msInputTwo = globalTwoInputSetMap[arguments[0]]; 
-    msInputTwo.insert(arguments[3]);
-    //for(auto v2 : msInputTwo)
-       //llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalTwoInputSetMap[arguments[0]] = msInputTwo;
-    //llvm::errs() << "Adding input variable " << arguments[3] << " to the set msInputSecond\n";
-    ///////////////////////////////////3rd input var.//////////////////////////////////////////
-    if (globalThreeInputSetMap.find(arguments[0]) != globalThreeInputSetMap.end()) 
-       msInputThree = globalThreeInputSetMap[arguments[0]]; 
-    msInputThree.insert(arguments[4]);
-    //for(auto v2 : msInputThree)
-       //llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalThreeInputSetMap[arguments[0]] = msInputThree;
-    //llvm::errs() << "Adding input variable " << arguments[4] << " to the set msInputSecond\n";
+    ts.insert(std::make_tuple(arg1, arg2, pcCondition, arg4));
+    globalOutputTupleBackward[arguments[0]] = ts;
 }
 
-////////////////////////////For 4 input variables FSM function////////////////////////////////////
-void SpecialFunctionHandler::handleAddMetadataGloballyFourInput(ExecutionState &state,
+//////////////////////////////Trojan Explanation//////////////////////////////
+void SpecialFunctionHandler::handleDetectOutputTrojan(ExecutionState &state,
                              KInstruction *target,
                              std::vector<ref<Expr> > &arguments) {
-    std::set<ref<Expr> > ms;
-    std::set<ref<Expr> > msInput;//container for 1st input variable
-    std::set<ref<Expr> > msInputTwo;//container for 2nd input variable
-    std::set<ref<Expr> > msInputThree;//container for 3rd input variable
-    std::set<ref<Expr> > msInputFourth;//container for 4st input variable
 
-    llvm::errs() << "Value of arg[1] in forward execution " << arguments[1] << "\n";
-    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
-       ms = globalMetadataSetMap[arguments[0]]; 
-    ms.insert(arguments[1]);   
-    for(auto v : ms)
-       llvm::errs() << "reachable states from add_meta_global: " << v << "\n";
-    globalMetadataSetMap[arguments[0]] = ms;
-    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > tsf;
+    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>, ref<Expr> > > tsb;
+    
+    std::fstream & out = *dontcareStats;
 
-    ///////////////////////////////////1st input var.//////////////////////////////////////////
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end()) 
-       msInput = globalInputSetMap[arguments[0]]; 
-    msInput.insert(arguments[2]);
-    for(auto v1 : msInput)
-       llvm::errs() << "reachable input variable first: " << v1 << "\n";
-    globalInputSetMap[arguments[0]] = msInput;
-    llvm::errs() << "Adding input variable " << arguments[2] << " to the set msInputFirst\n";
-    ///////////////////////////////////2nd input var.//////////////////////////////////////////
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end()) 
-       msInputTwo = globalTwoInputSetMap[arguments[0]]; 
-    msInputTwo.insert(arguments[3]);
-    for(auto v2 : msInputTwo)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalTwoInputSetMap[arguments[0]] = msInputTwo;
-    llvm::errs() << "Adding input variable " << arguments[3] << " to the set msInputSecond\n";
-    ///////////////////////////////////3rd input var.//////////////////////////////////////////
-    if (globalThreeInputSetMap.find(arguments[0]) != globalThreeInputSetMap.end()) 
-       msInputThree = globalThreeInputSetMap[arguments[0]]; 
-    msInputThree.insert(arguments[4]);
-    for(auto v2 : msInputThree)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalThreeInputSetMap[arguments[0]] = msInputThree;
-    llvm::errs() << "Adding input variable " << arguments[4] << " to the set msInputThird\n";
-    ///////////////////////////////////4th input var.//////////////////////////////////////////
-    if (globalFourInputSetMap.find(arguments[0]) != globalFourInputSetMap.end()) 
-       msInputFourth = globalFourInputSetMap[arguments[0]]; 
-    msInputFourth.insert(arguments[5]);
-    for(auto v2 : msInputFourth)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalFourInputSetMap[arguments[0]] = msInputFourth;
-    llvm::errs() << "Adding input variable " << arguments[5] << " to the set msInputFourth\n";
+    if (globalOutputTupleForward.find(arguments[0]) !=  globalOutputTupleForward.end())
+        tsf = globalOutputTupleForward[arguments[0]];
+
+    if (globalOutputTupleBackward.find(arguments[1]) !=  globalOutputTupleBackward.end())
+        tsb = globalOutputTupleBackward[arguments[1]];
+
+    
+	std::vector<ref<Expr>> vf;
+    const std::vector<ref<Expr>> &vrFake = vf;
+	ExecutionState *fake = new ExecutionState(vrFake);
+         
+	bool outTrojanDetectSuccess = false;
+    for (auto& tupleb: tsb) {
+
+	    ConstantExpr *constupleb0 = dyn_cast<ConstantExpr>(std::get<0>(tupleb));//prevState
+    	ConstantExpr *constupleb1 = dyn_cast<ConstantExpr>(std::get<1>(tupleb));//nextState
+    	ConstantExpr *constupleb2 = dyn_cast<ConstantExpr>(std::get<2>(tupleb));//inputCond
+    	ConstantExpr *constupleb3 = dyn_cast<ConstantExpr>(std::get<3>(tupleb));//output
+
+	    for (auto& tuplef: tsf) {
+	        bool preStatMatch = false;
+			bool preStatSymMatch = false;
+			bool preStatSymMatchPC = false;        
+	        bool nextStatMatch = false;
+			bool nextStatSymMatch = false;
+			bool nextStatSymMatchPC = false;        
+	        bool inputMatch = false;
+	        bool inputSymMatch = false;
+			bool inputSymMatchPC = false;
+	        bool outputMatch = false;
+			bool outputSymMatch = false;
+
+	        ref<ConstantExpr> preStatValueForward;
+	        ref<ConstantExpr> preStatValueBackward;
+	        ref<ConstantExpr> nextStatValueForward;
+	        ref<ConstantExpr> nextStatValueBackward;
+	        ref<ConstantExpr> inputValueForward;
+	        ref<ConstantExpr> inputValueBackward;
+	        ref<ConstantExpr> outputValueForward;
+	        ref<ConstantExpr> outputValueBackward;
+
+	        ConstantExpr *constuplef0 = dyn_cast<ConstantExpr>(std::get<0>(tuplef));//prevState
+	        ConstantExpr *constuplef1 = dyn_cast<ConstantExpr>(std::get<1>(tuplef));//nextState
+	        ConstantExpr *constuplef2 = dyn_cast<ConstantExpr>(std::get<2>(tuplef));//inputCond
+	        ConstantExpr *constuplef3 = dyn_cast<ConstantExpr>(std::get<3>(tuplef));//output
+
+			//handle 1st element in both tuples, i.e. previous state
+			if(constupleb0 && constuplef0) {
+				if (constupleb0->getZExtValue() == constuplef0->getZExtValue()) {
+		            preStatMatch = true;
+				} else {
+					continue;
+				}
+	        } else {
+		        ref<Expr> b0eqf0 = AndExpr::create(std::get<0>(tupleb), std::get<0>(tuplef));
+				if (!(executor.solver->mayBeTrue(state, b0eqf0, preStatSymMatch)))
+					continue;
+			}
+
+			// handle 2nd element in both tuples, i.e. next state
+			if(constupleb1 && constuplef1) {
+				if (constupleb1->getZExtValue() == constuplef1->getZExtValue()) {
+		          nextStatMatch = true;
+				} else 
+					continue;
+			} else {
+				ref<Expr> b1eqf1 = AndExpr::create(std::get<1>(tupleb), std::get<1>(tuplef));
+				if (!(executor.solver->mayBeTrue(state, b1eqf1, nextStatSymMatch)) )
+					continue;
+			}
+
+			//handle 3rd element in both tuples, i.e. input condition
+			/*if(constupleb2 && constuplef2) { 
+				if (constupleb2->getZExtValue() == constuplef2->getZExtValue()) {
+					inputMatch = true;
+				} else 
+					continue;
+			} else {
+				ref<Expr> b2eqf2 = AndExpr::create(std::get<2>(tupleb), std::get<2>(tuplef));
+				if( !(executor.solver->mayBeTrue(*fake, b2eqf2, inputSymMatch)) )
+					continue;
+				inputMatch = true;
+			} */
+			
+			// handle 4th element in both tuples, i.e. output values
+			if(constupleb3 && constuplef3) { 
+				if (constupleb3->getZExtValue() != constuplef3->getZExtValue()) {
+					outputMatch = true;
+					outTrojanDetectSuccess = true;
+					out << " \nFound an output Trojan:\tTime = "  << (util::getWallTime() - dontCareStartTime)<< "s\n"; 
+					out << "***Output value Forward : " << constuplef3->getZExtValue() << "***\n"
+		            << "***Output value Backward: " << constupleb3->getZExtValue() << "***\n\n";
+					break;
+				} else
+					continue;
+			} else {
+				ref<Expr> b3eqf3 = AndExpr::create(std::get<3>(tupleb), std::get<3>(tuplef));
+				if (executor.solver->mayBeTrue(*fake, b3eqf3, outputSymMatch) )
+					continue;
+				outTrojanDetectSuccess = true;
+				out << " \nFound an output Trojan:\tTime = "  << (util::getWallTime() - dontCareStartTime)<< "\n"; 
+				/*else {
+					executor.solver->getValue(*fake, std::get<3>(tuplef), outputValueForward);
+					executor.solver->getValue(*fake, std::get<3>(tupleb), outputValueBackward);
+					out << "fourth elements(output) of both tuple are symbolic and NOT same!!!\n"  << "***Output value Forward : " << outputValueForward->getZExtValue() << "***\n" << "  ***Output value Backward: " << outputValueBackward->getZExtValue() << "***\n";
+				}*/
+			}         
+		}
+	  
+		if (outTrojanDetectSuccess){
+			executor.terminateStateOnExecError(state, 
+                                         "Output value different!! TROJAN payload reported here!!"); 
+			break;
+		}
+		
+	}
 }
 
+//////////////////////////DCT Aware Reachbility Analysis//////////////////////////
+void SpecialFunctionHandler::handleDCTAwarePath(
+                                    ExecutionState &state,
+                                    KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+    StatsTracker * statsTracker = ((Executor*)theInterpreter)->getStatsTracker();
+    if (dontcareStats == NULL) {
+       std::string fname = "dontcarestats.txt";
+       if (DontCareTransFile != "")
+          fname = DontCareTransFile; 
+       dontcareStats = new std::fstream(fname, std::fstream::out);
+    }
 
-////////////////////////////For 5 input variables FSM function////////////////////////////////////
-void SpecialFunctionHandler::handleAddMetadataGloballyFiveInput(ExecutionState &state,
-                             KInstruction *target,
-                             std::vector<ref<Expr> > &arguments) {
-    std::set<ref<Expr> > ms;
-    std::set<ref<Expr> > msInput;//container for 1st input variable
-    std::set<ref<Expr> > msInputTwo;//container for 2nd input variable
-    std::set<ref<Expr> > msInputThree;//container for 3rd input variable
-    std::set<ref<Expr> > msInputFourth;//container for 4st input variable
-    std::set<ref<Expr> > msInputFive;//container for 4st input variable
+    std::fstream & out = *dontcareStats;
+	
+    // hander reachable set from forward execution       
+    std::set<ref<Expr> > rs;
+    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end())
+       rs = globalMetadataSetMap[arguments[0]];
+    ref<Expr> reachable = NULL;
+ 
+    for(auto v : rs) {
+		ref<Expr> eqexp = EqExpr::create(arguments[2], v);
+		if (reachable.isNull())
+			reachable = eqexp;
+		else {
+          ref<Expr> temp = reachable;
+          reachable = OrExpr::create(temp, eqexp);
+       }
+    }  
+    if (reachable.isNull())
+        return;
 
-    llvm::errs() << "Value of arg[1] in forward execution " << arguments[1] << "\n";
-    if (globalMetadataSetMap.find(arguments[0]) != globalMetadataSetMap.end()) 
-       ms = globalMetadataSetMap[arguments[0]]; 
-    ms.insert(arguments[1]);   
-    for(auto v : ms)
-       llvm::errs() << "reachable states from add_meta_global: " << v << "\n";
-    globalMetadataSetMap[arguments[0]] = ms;
-    llvm::errs() << "Adding metadata " << arguments[1] << " to the set of " << arguments[0] << "\n";
+    ref<Expr> notreachable = NotExpr::create(reachable); 
 
-    ///////////////////////////////////1st input var.//////////////////////////////////////////
-    if (globalInputSetMap.find(arguments[0]) != globalInputSetMap.end()) 
-       msInput = globalInputSetMap[arguments[0]]; 
-    msInput.insert(arguments[2]);
-    for(auto v1 : msInput)
-       llvm::errs() << "reachable input variable first: " << v1 << "\n";
-    globalInputSetMap[arguments[0]] = msInput;
-    llvm::errs() << "Adding input variable " << arguments[2] << " to the set msInputFirst\n";
-    ///////////////////////////////////2nd input var.//////////////////////////////////////////
-    if (globalTwoInputSetMap.find(arguments[0]) != globalTwoInputSetMap.end()) 
-       msInputTwo = globalTwoInputSetMap[arguments[0]]; 
-    msInputTwo.insert(arguments[3]);
-    for(auto v2 : msInputTwo)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalTwoInputSetMap[arguments[0]] = msInputTwo;
-    llvm::errs() << "Adding input variable " << arguments[3] << " to the set msInputSecond\n";
-    ///////////////////////////////////3rd input var.//////////////////////////////////////////
-    if (globalThreeInputSetMap.find(arguments[0]) != globalThreeInputSetMap.end()) 
-       msInputThree = globalThreeInputSetMap[arguments[0]]; 
-    msInputThree.insert(arguments[4]);
-    for(auto v2 : msInputThree)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalThreeInputSetMap[arguments[0]] = msInputThree;
-    llvm::errs() << "Adding input variable " << arguments[4] << " to the set msInputThird\n";
-    ///////////////////////////////////4th input var.//////////////////////////////////////////
-    if (globalFourInputSetMap.find(arguments[0]) != globalFourInputSetMap.end()) 
-       msInputFourth = globalFourInputSetMap[arguments[0]]; 
-    msInputFourth.insert(arguments[5]);
-    for(auto v2 : msInputFourth)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalFourInputSetMap[arguments[0]] = msInputFourth;
-    llvm::errs() << "Adding input variable " << arguments[5] << " to the set msInputFourth\n";
-    ///////////////////////////////////5th input var.//////////////////////////////////////////
-    if (globalFiveInputSetMap.find(arguments[0]) != globalFiveInputSetMap.end()) 
-       msInputFive = globalFiveInputSetMap[arguments[0]]; 
-    msInputFive.insert(arguments[6]);
-    for(auto v2 : msInputFive)
-       llvm::errs() << "reachable input variable second: " << v2 << "\n";
-    globalFiveInputSetMap[arguments[0]] = msInputFive;
-    llvm::errs() << "Adding input variable " << arguments[6] << " to the set msInputFive\n";
+
+    bool terminateSuccessDest = false;
+	
+    for(auto v1 : rs) {
+		bool sourceMatches;
+		bool destMatches;
+        ConstantExpr *consv1 = dyn_cast<ConstantExpr>(v1);
+
+		ref<Expr> v1eqexp1 = EqExpr::create(arguments[3], v1);
+  	    ref<Expr> v1eqexp2 = EqExpr::create(arguments[3], arguments[1]);
+		ref<Expr> Andv1eqexp = AndExpr::create(v1eqexp1, v1eqexp2);
+     
+   	    std::vector<ref<Expr>> vf;
+        const std::vector<ref<Expr>> &vrDest = vf;
+		ExecutionState *fakeDest = new ExecutionState(vrDest);
+        executor.solver->setTimeout(executor.coreSolverTimeout);
+      
+		ref<ConstantExpr> sourceValue;
+  	    ref<ConstantExpr> destValue;
+	
+        bool destSuccess = executor.solver->mayBeTrue(state, Andv1eqexp, destMatches);
+
+		if (destSuccess && destMatches) {
+			executor.solver->setTimeout(executor.coreSolverTimeout);
+            //ref<Expr> notreachableANDinputs = AndExpr::create(notreachable, reachableInput);
+			ref<Expr> notreachableANDinputs = notreachable;
+              
+            bool sourceSuccess = executor.solver->mayBeTrue(state, notreachableANDinputs, sourceMatches);
+            if (sourceSuccess && sourceMatches && destSuccess &&destMatches) {
+                terminateSuccessDest = true;
+                out << "\n Found a don't care transition src\n";
+				
+                ExecutionState *fakeSource = new ExecutionState(state);
+                fakeSource->addConstraint(notreachableANDinputs);
+              
+                std::pair<ref<Expr>, ref<Expr>> res = executor.solver->getRange(*fakeSource, arguments[2]);
+                ConstantExpr *consfirst = dyn_cast<ConstantExpr>(res.first);
+                ConstantExpr *conssecond = dyn_cast<ConstantExpr>(res.second);
+				
+				// src state
+                out << "Range of source state in : [" 
+                    << consfirst->getZExtValue() << "," 
+                    << conssecond->getZExtValue() << "]\n";
+					
+                fakeDest->addConstraint(Andv1eqexp);
+                executor.solver->getValue(*fakeDest, arguments[3], destValue);
+				// sink state
+                out << "sink state: " 
+                    << destValue->getZExtValue() << "\n";
+				// depth info
+                std::string tmp;
+				llvm::raw_string_ostream depth(tmp);
+				ExprPPrinter::printSingleExpr(depth, arguments[5]);
+				out << "depth: " << depth.str() << "\n";
+				break;
+            } else
+                continue;
+        	
+		} else
+            continue;
+	}
+    
+	if (terminateSuccessDest == false){
+		executor.terminateState(state);
+		return;
+	}
 }
 
+/// For finding all transitions from a source state
+void SpecialFunctionHandler::handleAllTransitionFromGivenSrcGlobally(
+                                    ExecutionState &state,
+                                    KInstruction *target,
+                                    std::vector<ref<Expr> > &arguments) {
+    std::set<std::tuple<ref<Expr>, ref<Expr>, ref<Expr>>> pathTupSet;
+    std::fstream & out = *dontcareStats;
+           
+    if(globalOutputTupleFindAllTransFromSrc.find(arguments[0]) !=  globalOutputTupleFindAllTransFromSrc.end())
+       pathTupSet = globalOutputTupleFindAllTransFromSrc[arguments[0]];
+
+    // create a fake state
+   	std::vector<ref<Expr>> vf;
+    const std::vector<ref<Expr>> &vrf = vf;
+   	ExecutionState *fake = new ExecutionState(vrf);
+    
+	ConstantExpr *constarg1 = dyn_cast<ConstantExpr>(arguments[1]); // depth
+    ConstantExpr *constarg2 = dyn_cast<ConstantExpr>(arguments[2]); // src state
+    ConstantExpr *constarg3 = dyn_cast<ConstantExpr>(arguments[3]); // sink state
+
+    ref<ConstantExpr> concreteConstArg1, concreteConstArg2, concreteConstArg3;
+    
+	// terminate state that have cycle transition
+	ref<Expr> cycleTrans = EqExpr::create(arguments[2], arguments[3]);
+	bool successCycleTrans, resultCycleTrans;
+	successCycleTrans = executor.solver->mayBeTrue(state, cycleTrans, resultCycleTrans);
+	if (successCycleTrans && resultCycleTrans) {
+		executor.terminateState(state);
+		return;	
+	}
+				
+	//check if arguments[1] (i.e. depth) is concrete or symbolic
+    if (constarg1) {
+        concreteConstArg1 = constarg1;
+    } else {
+        executor.solver->getValue(*fake, arguments[1], concreteConstArg1);
+    }
+	
+    //check if arguments[2] (i.e. srcState) is concrete or symbolic
+    if (constarg2) {
+        concreteConstArg2 = constarg2;
+    } else {
+        executor.solver->getValue(*fake, arguments[2], concreteConstArg2);
+    }
+
+    //check if arguments[3] (i.e. sinkState) is concrete or symbolic
+    if (constarg3) {
+        concreteConstArg3 = constarg3;
+    } else {
+        executor.solver->getValue(*fake, arguments[3], concreteConstArg3);
+    }
+	
+	pathTupSet.insert(std::make_tuple(concreteConstArg1, concreteConstArg2, concreteConstArg3));
+	globalOutputTupleFindAllTransFromSrc[arguments[0]] = pathTupSet;
+	
+	// if reach a protect state, terminate current state and print result
+	ref<Expr> reachProtect = EqExpr::create(arguments[3], arguments[4]);
+	bool success, result;
+	success = executor.solver->mayBeTrue(state, reachProtect, result);
+	bool terminate = false;
+	if (success && result) {
+		// print path here
+		//out  << pathTupSet.size() << " elements in pathTupSet\n";
+		for(auto& tuple: pathTupSet){
+            std::string Str0;
+			llvm::raw_string_ostream info0(Str0);
+            ExprPPrinter::printSingleExpr(info0, std::get<1>(tuple));
+            out  << "srcState: "<< info0.str();
+
+            std::string Str1;
+			llvm::raw_string_ostream info1(Str1);
+            ExprPPrinter::printSingleExpr(info1, std::get<2>(tuple));
+            out  << "; sinkState: "<< info1.str(); 
+
+            std::string Str2;
+			llvm::raw_string_ostream info2(Str2);
+            ExprPPrinter::printSingleExpr(info2, std::get<0>(tuple));
+            out  << "; depth: "<< info2.str() << "\n"; 
+        }
+		out  << "\n";
+		terminate = true;
+	} /* else { // else add to pathTupSet if the sinkState hasn't been found yet
+		for(auto& tuple: pathTupSet){
+			ref<Expr> sinkStateFound = EqExpr::create(arguments[2], arguments[3]);
+			bool successSink, resultSink;
+			successSink = executor.solver->mayBeTrue(state, sinkStateFound, resultSink);
+			//if (cast<ConstantExpr>(std::get<1>(tuple))->getZExtValue() == concreteConstArg3->getZExtValue())  {
+			if (successSink && resultSink) {
+				terminate = true;
+				break;
+			} else {
+				pathTupSet.insert(std::make_tuple(concreteConstArg1, concreteConstArg2, concreteConstArg3));
+				globalOutputTupleFindAllTransFromSrc[arguments[0]] = pathTupSet;
+			}
+		}
+	} */
+	
+	if (terminate) {
+		executor.terminateState(state);
+		return;		
+	}
+}
+
+///@}
+ 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 void SpecialFunctionHandler::handleCheckMetadataMembershipLocally(ExecutionState &state,
