@@ -392,40 +392,57 @@ namespace klee {
     HANDLER(handleRecordStepTraceLocally);//Versym
     HANDLER(handleSetMetadata);
     HANDLER(handleGetMetadata);
+	
+	///@{ HWDCT extension
+	// DCT detection
     HANDLER(handleAddMetadataGlobally);
-    
+    HANDLER(handleDontCareTransitionGlobally);
+	// Trojan prediction
+    HANDLER(handleAddForwardRegisterMetadataGlobally);
+    HANDLER(handleAddCheckAbstractRegisterMetadataGlobally);
+	// Trojan explanation
+    HANDLER(handleAddOutputMetadataGlobally);
+    HANDLER(handleAddBackOutputMetadataGlobally);
+    HANDLER(handleDetectOutputTrojan);
+	// DCT aware Reachability Analysis
+	HANDLER(handleDCTAwarePath);
+    HANDLER(handleAllTransitionFromGivenSrcGlobally);
+    ///@}
+	
     HANDLER(handleCheckAndRecordPCGlobally);
     HANDLER(handleCheckAndRecordPCWithAssumeGlobally);
     HANDLER(handleAddAssumeAsPC);
+    
+    HANDLER(handleRecordInitialStateGlobally);
+    HANDLER(handleCheckReachInitialStateGlobally);
+    HANDLER(handleCheckReachInitialStateRegGlobally);
+    /* hybrid fuzzing exetension start*/
+    HANDLER(handleAddGuardSignal);
+    /* hybrid fuzzing exetension end  */
+	  
+    ///@{ Analyze hack@dac 21 benchmark
+    HANDLER(handleCheckConstraintVarGlobally);
+    ///@}
+    
+	  /* Ruochen */
+  	HANDLER(handleClearPrevPCGlobally);
+	HANDLER(handleAcquireInputModelGlobally);
+    HANDLER(handlePrintPatternValue);
+    HANDLER(handlePrintPatternAdressValue);
+	  /* Ruochen */
+    
     HANDLER(handleAcquireInputPatternGlobally);
     HANDLER(handleAcquireInputPatternPreviousCycleGlobally);
     HANDLER(handleClearPCGlobally);
-    
-    HANDLER(handleAddMetadataGloballyTwoInput);
-    HANDLER(handleAddMetadataGloballyThreeInput);
-    HANDLER(handleAddMetadataGloballyFourInput);
-    HANDLER(handleAddMetadataGloballyFiveInput);
-    
-    HANDLER(handleDontCareTransitionGlobally);
-    HANDLER(handleDontCareTransitionGloballyTwoInput);
-    HANDLER(handleDontCareTransitionGloballyThreeInput);
-    HANDLER(handleDontCareTransitionGloballyFourInput);
-    HANDLER(handleDontCareTransitionGloballyFiveInput);
-    
-    HANDLER(handleAllTransitionFromGivenSrcGlobally);
+
     HANDLER(handleAllTransitionFromGivenUnreachableSrcOneStepGlobally);
     
     HANDLER(handleAddTransitionMetadataGlobally);
     
-    HANDLER(handleAddForwardRegisterMetadataGlobally);
-    HANDLER(handleAddCheckAbstractRegisterMetadataGlobally);
     HANDLER(handleAddOneForwardRegisterMetadataGlobally);//klee_add_one_forward_reg_metadata_globally
     HANDLER(handleAddCheckAbstractOneRegisterMetadataGlobally);//klee_add_and_check_abstract_one_reg_metadata_globally
     
-    HANDLER(handleAddOutputMetadataGlobally);
-    HANDLER(handleAddBackOutputMetadataGlobally);
     HANDLER(handleCheckDCTfinishTime);
-    HANDLER(handleDetectOutputTrojan);
     HANDLER(handleAddInterMetadataGlobally);
     
     HANDLER(handleSetSourceState);
