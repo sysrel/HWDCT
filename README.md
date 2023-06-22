@@ -9,7 +9,7 @@ Please refer to this link for more details: https://dl.acm.org/doi/10.1145/35583
 
 ## Run HWDCT using provided Virtual Machine
 Please download VM from: https://drive.google.com/file/d/1A_s9yP2tSmJ3BA56iBxfY6ECTxamzeRB/view?usp=sharing \
-username: ubuntu
+username: ubuntu \
 password: ubuntu
 
 ## Run HWDCT with local build
