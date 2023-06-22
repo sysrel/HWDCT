@@ -57,7 +57,7 @@ std::fstream *patternTime = NULL;
 double patternSolveStartTime;
 
 bool alreadyGotAnInputPattern = false;
-extern std::map<long, std::set<ref<Expr>>> globCurrentConstraintMap; //from executor.cpp
+std::map<long, std::set<ref<Expr>>> globCurrentConstraintMap; //from executor.cpp
 //extern std::map<long, std::vector<ref<Expr>>> globCurrentConstraintMap;; //from executor.cpp
 /* Ruochen */
 
