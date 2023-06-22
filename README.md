@@ -6,12 +6,19 @@ This is the repository for the HWDCT tool described in our [TODAES '22](https://
 - Ruochen Dai and Tuba Yavuz. A Symbolic Approach to Detecting Hardware Trojans Triggered by Don’t Care Transitions. Accepted to ACM Transactions on Design Automation of Electronic Systems, 2022.
 
 Please refer to this link for more details: https://dl.acm.org/doi/10.1145/3558392
-## Prerequisites
-### Klee
+
+## Run HWDCT using provided Virtual Machine
+Please download VM from: https://drive.google.com/file/d/1A_s9yP2tSmJ3BA56iBxfY6ECTxamzeRB/view?usp=sharing
+username: ubuntu
+password: ubuntu
+
+## Run HWDCT with local build
+### Prerequisites
+#### Klee
 Please refer to website: [https://klee.github.io/releases/docs/v2.1/build-llvm38/](https://klee.github.io/releases/docs/v2.1/build-llvm38/) about 
 how to build KLEE.
 
-### WLLVM
+#### WLLVM
 
 As of August 2016 WLLVM is now a pip package. You can just do:
 
@@ -27,7 +34,7 @@ sudo pip install wllvm
 
 For additional information, please refer to website: [https://github.com/travitch/whole-program-llvm](https://github.com/travitch/whole-program-llvm).
 
-### Verilator
+#### Verilator
 
 ```
 git clone http://git.veripool.org/git/verilator
@@ -57,7 +64,7 @@ cp Verilator/verilated.mk /usr/local/share/verilator/include
 
 
 
-## Build
+### Build
 
 1. **Get HWDCT source:**
 
