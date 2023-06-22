@@ -8,7 +8,7 @@ This is the repository for the HWDCT tool described in our [TODAES '22](https://
 Please refer to this link for more details: https://dl.acm.org/doi/10.1145/3558392
 
 ## Run HWDCT using provided Virtual Machine
-Please download VM from: https://drive.google.com/file/d/1A_s9yP2tSmJ3BA56iBxfY6ECTxamzeRB/view?usp=sharing
+Please download VM from: https://drive.google.com/file/d/1A_s9yP2tSmJ3BA56iBxfY6ECTxamzeRB/view?usp=sharing \
 username: ubuntu
 password: ubuntu
 
